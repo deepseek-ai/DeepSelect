@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdio>
+#include <array>
 #include <exception>
 #include <memory>
 #include <string>
@@ -97,81 +98,70 @@ inline __host__ __device__ constexpr T find_next_power_of_2(const T& x) {
     return find_next_power_of_2<T, LOWER_BOUND*2>(x);
 }
 
-// A wrapper for make_tensor_map
-static inline CUtensorMap make_tensor_map(
-    const std::vector<uint64_t> &size,
-    const std::vector<uint64_t> &strides,   // PAY ATTENTION: In BYTES
-    const std::vector<uint32_t> &box_size,
+// Driver symbols are independent of tensor storage and the current device.
+// Inline linkage shares this cache across translation units. A failed lookup
+// throws before initialization completes, so a later call retries it.
+inline PFN_cuTensorMapEncodeTiled_v12000 get_tensor_map_encoder() {
+    static const auto encoder = [] {
+        cudaDriverEntryPointQueryResult cuda_status;
+        void* pfn = nullptr;
+#if CUDA_VERSION >= 13000
+        KU_CUDA_CHECK(cudaGetDriverEntryPointByVersion(
+            "cuTensorMapEncodeTiled", &pfn, 12000, cudaEnableDefault, &cuda_status));
+#else
+        KU_CUDA_CHECK(cudaGetDriverEntryPoint(
+            "cuTensorMapEncodeTiled", &pfn, cudaEnableDefault, &cuda_status));
+#endif
+        KU_ASSERT(cuda_status == cudaDriverEntryPointSuccess && pfn != nullptr,
+                  "Failed to load `cuTensorMapEncodeTiled`. cuda_status = %d", cuda_status);
+        return reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(pfn);
+    }();
+    return encoder;
+}
+
+namespace detail {
+
+inline CUtensorMap encode_tensor_map(
+    int dim,
+    const uint64_t* size,
+    const uint64_t* strides,
+    const uint32_t* box_size,
     void* global_ptr,
     CUtensorMapDataType data_type,
     CUtensorMapSwizzle swizzle_mode,
     CUtensorMapL2promotion l2_promotion,
-    CUtensorMapInterleave interleave_mode = CUtensorMapInterleave::CU_TENSOR_MAP_INTERLEAVE_NONE,
-    CUtensorMapFloatOOBfill oob_fill = CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE,
-    const std::vector<uint32_t> &element_strides_ = {}
+    CUtensorMapInterleave interleave_mode,
+    CUtensorMapFloatOOBfill oob_fill,
+    const uint32_t* element_strides
 ) {
-    int dim = size.size();
-    KU_ASSERT(dim >= 1);
-    
-    std::vector<uint32_t> element_strides;
-    if (element_strides_.empty()) {
-        for (int i = 0; i < dim; ++i)
-            element_strides.push_back(1);
-    } else {
-        element_strides = element_strides_;
-    }
-    KU_ASSERT(strides.size() == (uint32_t)dim-1 && box_size.size() == (uint32_t)dim && element_strides.size() == (uint32_t)dim);
-
-    auto call_cuTensorMapEncodeTiled = [&]<typename... Args>(Args... args) {
-        cudaDriverEntryPointQueryResult cuda_status;
-        void* pfn = nullptr;
-#if (__CUDACC_VER_MAJOR__ > 12)
-        KU_CUDA_CHECK(cudaGetDriverEntryPointByVersion(
-            "cuTensorMapEncodeTiled",
-            &pfn, 12000,
-            cudaEnableDefault,
-            &cuda_status));
-#else
-        KU_CUDA_CHECK(cudaGetDriverEntryPoint(
-            "cuTensorMapEncodeTiled",
-            &pfn,
-            cudaEnableDefault,
-            &cuda_status));
-#endif
-        if (cuda_status != cudaDriverEntryPointSuccess) {
-            KU_ASSERT(false, "Failed to load `cuTensorMapEncodeTiled`. cuda_status = %d", cuda_status);
-        }
-        return reinterpret_cast<decltype(&cuTensorMapEncodeTiled)>(pfn)(args...); \
-    };
-
     CUtensorMap result;
-    CUresult ret_code = call_cuTensorMapEncodeTiled(
+    CUresult ret_code = get_tensor_map_encoder()(
         &result,
         data_type,
         dim,
         global_ptr,
-        size.data(),
-        strides.data(),
-        box_size.data(),
-        element_strides.data(),
+        size,
+        strides,
+        box_size,
+        element_strides,
         interleave_mode,
         swizzle_mode,
         l2_promotion,
         oob_fill
     );
     if (ret_code != CUresult::CUDA_SUCCESS) {
-        auto print_vector = [&](auto t, const char* fmt, const char end='\n') {
-            for (auto elem : t) {
-                printf(fmt, elem);
+        auto print_vector = [&](auto t, int count, const char* fmt, const char end='\n') {
+            for (int i = 0; i < count; ++i) {
+                printf(fmt, t[i]);
             }
             printf("%c", end);
         };
         fprintf(stderr, "Failed to create tensormap\n");
         fprintf(stderr, "Dim: %d\n", dim);
-        printf("size: "); print_vector(size, "%lu ");
-        printf("strides: "); print_vector(strides, "%lu ");
-        printf("box_size: "); print_vector(box_size, "%u ");
-        printf("element_strides: "); print_vector(element_strides, "%u ");
+        printf("size: "); print_vector(size, dim, "%lu ");
+        printf("strides: "); print_vector(strides, dim-1, "%lu ");
+        printf("box_size: "); print_vector(box_size, dim, "%u ");
+        printf("element_strides: "); print_vector(element_strides, dim, "%u ");
         printf("global ptr: 0x%lx\n", (int64_t)global_ptr);
         printf("data_type: %d\n", (int)data_type);
         printf("swizzle_mode: %d\n", (int)swizzle_mode);
@@ -181,6 +171,54 @@ static inline CUtensorMap make_tensor_map(
         KU_ASSERT(false);
     }
     return result;
+}
+
+} // namespace detail
+
+// Preserve the dynamically ranked interface for existing callers.
+static inline CUtensorMap make_tensor_map(
+    const std::vector<uint64_t>& size,
+    const std::vector<uint64_t>& strides, // In bytes
+    const std::vector<uint32_t>& box_size,
+    void* global_ptr,
+    CUtensorMapDataType data_type,
+    CUtensorMapSwizzle swizzle_mode,
+    CUtensorMapL2promotion l2_promotion,
+    CUtensorMapInterleave interleave_mode = CU_TENSOR_MAP_INTERLEAVE_NONE,
+    CUtensorMapFloatOOBfill oob_fill = CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE,
+    const std::vector<uint32_t>& element_strides_ = {}
+) {
+    int dim = size.size();
+    KU_ASSERT(dim >= 1);
+    std::vector<uint32_t> element_strides = element_strides_.empty()
+        ? std::vector<uint32_t>(dim, 1) : element_strides_;
+    KU_ASSERT(strides.size() == (uint32_t)dim-1 && box_size.size() == (uint32_t)dim && element_strides.size() == (uint32_t)dim);
+    return detail::encode_tensor_map(dim, size.data(), strides.data(), box_size.data(),
+        global_ptr, data_type, swizzle_mode, l2_promotion, interleave_mode, oob_fill, element_strides.data());
+}
+
+// Fixed rank keeps metadata on the stack; the descriptor is still rebuilt for
+// every call's pointer, dimensions, and strides.
+template<size_t Rank>
+inline CUtensorMap make_tensor_map(
+    const std::array<uint64_t, Rank>& size,
+    const std::array<uint64_t, Rank-1>& strides, // In bytes
+    const std::array<uint32_t, Rank>& box_size,
+    void* global_ptr,
+    CUtensorMapDataType data_type,
+    CUtensorMapSwizzle swizzle_mode,
+    CUtensorMapL2promotion l2_promotion,
+    CUtensorMapInterleave interleave_mode = CU_TENSOR_MAP_INTERLEAVE_NONE,
+    CUtensorMapFloatOOBfill oob_fill = CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE,
+    const std::array<uint32_t, Rank>& element_strides = [] {
+        std::array<uint32_t, Rank> ones;
+        ones.fill(1);
+        return ones;
+    }()
+) {
+    static_assert(Rank >= 1 && Rank <= 5);
+    return detail::encode_tensor_map(Rank, size.data(), strides.data(), box_size.data(),
+        global_ptr, data_type, swizzle_mode, l2_promotion, interleave_mode, oob_fill, element_strides.data());
 }
 
 // Given strides (in number of elements), this function converts their datatype in uint64_t and then multiplies by elem_size
