@@ -108,6 +108,6 @@ $$
 
 此外，该算子中的比较指令和位运算指令数量极多。根据我们的观察，此类指令会和整数加法指令抢占部分硬件资源，造成算子性能下降。哪怕将整数加法换成与比较、位运算指令没有冲突的整数乘加（`mad`）指令，其吞吐也只有浮点乘加的一半，成为性能瓶颈。观察到，当 `x` 和 `y` 满足 `0 <= x, y <= 2^22` 时，`x+y = __float_as_uint(__uint_as_float(x) + __uint_as_float(y))`，也即，两个不超过 $2^{22}$ 的正整数的加法结果，与将其二进制表示视作 `float32`（此时二者应为 denormal number）然后做浮点加法的结果是一致的。因此我们可以[使用浮点加法来替换部分整数加法](../csrc/cuda_kernels/common_parts.cuh#L1051)，以提高吞吐。
 
-除了上述两点之外，我们还使用底层 PTX 指令与位运算操作加速了其它操作，包括[warp 级前缀和](../csrc/cuda_kernels/common_parts.cuh#L1478)、[位提取](../csrc/cuda_kernels/common_parts.cuh#L955)、[直方图构建](../csrc/cuda_kernels/common_parts.cuh#L940)等，详见代码。
+除了上述两点之外，我们还使用底层 PTX 指令与位运算操作加速了其它操作，包括[warp 级前缀和](../csrc/cuda_kernels/common_parts.cuh#L1478)、[字节提取](../csrc/cuda_kernels/common_parts.cuh#L955)、[直方图构建](../csrc/cuda_kernels/common_parts.cuh#L940)等，详见代码。
 
 对于 batch size 较小的场景（或者 wave quantization 效应下最后一个 wave 中活跃 SM 数量较少的场景），我们使用 Threadblock Cluster 将一个序列的计算切分至多个 Stream Multiprocessor \(SM\) 上。具体来说，每条序列会被切成若干份，每份首先经由一个 CTA \(CUDA Threadblock\) 求出这一份中 top\-k 大的元素。紧接着，每个 CTA 会将这 top\-k 个元素发送至其所在的 Threadblock Cluster 的 CTA0，再由 CTA0 取出这些元素中的前 k 大元素。
