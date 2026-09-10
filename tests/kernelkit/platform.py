@@ -1,5 +1,6 @@
 import enum
 import functools
+import shutil
 import subprocess
 
 
@@ -13,10 +14,17 @@ def get_current_platform() -> Platform:
     """
     Get the current platform via `lspci`
     """
-    output = subprocess.check_output(["lspci"], text=True)
-    if "3D controller: NVIDIA Corporation Device" in output:
-        return Platform.CUDA
-    return Platform.CPU_ONLY
+    if shutil.which("lspci") is not None:
+        output = subprocess.check_output(["lspci"], text=True)
+        if "3D controller: NVIDIA Corporation Device" in output:
+            return Platform.CUDA
+        return Platform.CPU_ONLY
+
+    # `lspci` is not installed, which is common inside containers. Fall back to
+    # torch, which is already a hard dependency and can see the device directly.
+    import torch
+
+    return Platform.CUDA if torch.cuda.is_available() else Platform.CPU_ONLY
 
 
 def assert_current_platform(target_platform: Platform | list[Platform]):
