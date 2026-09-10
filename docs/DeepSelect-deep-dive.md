@@ -68,15 +68,12 @@ Now consider the set of the first $i$ processed blocks, $U_i=\{\mathcal B_1,\ldo
 
 Conditioned on $U_i$, the block $\mathcal B_i$ is uniformly distributed over the $i$ blocks in $U_i$. Let $T_i$ be the top $L$ elements contained in $U_i$, or all elements if $U_i$ contains fewer than $L$. By the rank bound above, every element appended from $\mathcal B_i$ belongs to $T_i$. Therefore,
 
-$$
+```math
 \mathbb E[A_i\mid U_i]
-\le
-\frac1i\sum_{b\in U_i}|b\cap T_i|
-=
-\frac{|T_i|}{i}
-\le
-\frac Li.
-$$
+\le \frac1i\sum_{b\in U_i}|b\cap T_i|
+= \frac{|T_i|}{i}
+\le \frac Li.
+```
 
 Let $A=\sum_i A_i$. By linearity of expectation, $\mathbb E[A]\le LH_m.$
 
@@ -86,15 +83,13 @@ Across all `TopK` calls, each appended element contributes once to an input, whi
 
 Therefore,
 
-$$
+```math
 \boxed{
 \mathbb E[W]
-\le
-\left(1+\frac{k}{B_2}\right)LH_m
-=
-\left(1+\frac{k}{B_2}\right)L\bigl(\ln m+O(1)\bigr).
+\le \left(1+\frac{k}{B_2}\right)LH_m
+= \left(1+\frac{k}{B_2}\right)L\bigl(\ln m+O(1)\bigr).
 }
-$$
+```
 
 # Performance Summary
 

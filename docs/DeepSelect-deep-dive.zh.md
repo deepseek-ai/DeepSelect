@@ -68,15 +68,12 @@ $$
 
 在给定 $U_i$ 的条件下，$\mathcal B_i$ 在 $U_i$ 中的 $i$ 个块之间是均匀分布。令 $T_i$ 表示 $U_i$ 中所有元素里的前 $L$ 大元素；若元素总数不足 $L$，则取全部元素。根据上面的界，所有被加入的元素都属于 $T_i$，因此
 
-$$
+```math
 \mathbb E[A_i\mid U_i]
-\le
-\frac1i\sum_{b\in U_i}|b\cap T_i|
-=
-\frac{|T_i|}{i}
-\le
-\frac Li.
-$$
+\le \frac1i\sum_{b\in U_i}|b\cap T_i|
+= \frac{|T_i|}{i}
+\le \frac Li.
+```
 
 于是，令 $A=\sum_i A_i$，根据期望的线性性，我们可以得出 $\mathbb E[A]\le LH_m$。
 
@@ -86,15 +83,13 @@ $$
 
 从而得到
 
-$$
+```math
 \boxed{
 \mathbb E[W]
-\le
-\left(1+\frac{k}{B_2}\right)LH_m
-=
-\left(1+\frac{k}{B_2}\right)L\bigl(\ln m+O(1)\bigr).
+\le \left(1+\frac{k}{B_2}\right)LH_m
+= \left(1+\frac{k}{B_2}\right)L\bigl(\ln m+O(1)\bigr).
 }
-$$
+```
 
 # 性能综述
 
