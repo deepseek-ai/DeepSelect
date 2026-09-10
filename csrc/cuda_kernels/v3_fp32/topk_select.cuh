@@ -58,7 +58,7 @@ public:
     using Base::PLACEHOLDER_PAIR;
     using Base::NUM_RECONSTRUCT_BUCKETS;
 
-    static constexpr uint32_t PLACEHOLDER = 0x7fffffff;
+    static constexpr uint32_t PLACEHOLDER = 0xff800000; // -INF
     static constexpr uint32_t NEG_INF_BITS = 0xFF800000;
     static_assert(MAX_TOPK == 512 || MAX_TOPK == 1024 || MAX_TOPK == 4096);
     static constexpr bool HAS_PARTIAL_ROUNDS = NUM_SEGS_PER_ROUND > NUM_TAIL_SEGS;
@@ -141,11 +141,12 @@ public:
             uint32_t pivot_value_bits;     
             uint32_t start_pos_in_collector;            
             uint32_t eq_quota;              
+            uint32_t cnt_nan;
         };
 
-        auto compute_pivot_and_quota = [&](uint32_t topk, uint32_t num_nan_pads, const auto &for_each_value, uint32_t my_num_pads) -> PivotAndQuota {
+        auto compute_pivot_and_quota = [&](uint32_t topk, const auto &for_each_value) -> PivotAndQuota {
             if (warp_idx == 0) {
-                find_pivot_in_histogram(topk + num_nan_pads, smem.reconstruct_bucket_counter[0]);
+                find_pivot_in_histogram(topk, smem.reconstruct_bucket_counter[0]);
             }
             __syncthreads();
             // `pivot_prefix` tracks the pivot's leading bits in the *undistorted* (raw) domain.
@@ -204,31 +205,32 @@ public:
 
             // set.xx.f32.f32 yields 1.0/0.0, so the counts accumulate on the FP pipe instead of the
             // (busiest) integer pipe; the counts stay exact because FP32 can represent every integer within 0 ~ 2**23
-            float gt_accum = 0.0f, eq_accum = 0.0f, nan_accum = 0.0f;
+            float gt_accum = 0.0f, eq_accum = 0.0f;
+            float nan_accum = 0.0f;
             for_each_value([&](uint32_t value_bits) {
                 float v = __uint_as_float(value_bits);
                 asm volatile (
                     "{\n"
-                    ".reg .f32 g, e, n;\n"
+                    ".reg .f32 g, e;\n"
                     "set.gt.f32.f32 g, %3, %4;\n"
                     "add.f32 %0, %0, g;\n"
                     "set.eq.f32.f32 e, %3, %4;\n"
                     "add.f32 %1, %1, e;\n"
-                    "set.nan.f32.f32 n, %3, %3;\n"
-                    "add.f32 %2, %2, n;\n"
+                    "min.NaN.f32 %2, %2, %3;\n" // We use `min.NaN` for NaN detection
                     "}\n"
                     : "+f"(gt_accum), "+f"(eq_accum), "+f"(nan_accum)
                     : "f"(v), "f"(pivot_value));
             });
             uint32_t cnt_gt = (uint32_t)gt_accum;
             uint32_t cnt_eq = (uint32_t)eq_accum;
-            uint32_t cnt_nan = (uint32_t)nan_accum;
-            have_nan |= cnt_nan != my_num_pads;
+            float nan_flag;
+            asm ("set.nan.f32.f32 %0, %1, %1;" : "=f"(nan_flag) : "f"(nan_accum));
+            uint32_t cnt_nan = (uint32_t)nan_flag;
 
             static_assert(NUM_WARPS <= NUM_RECONSTRUCT_BUCKETS);
             uint32_t *eq_pass_warp_cnt = smem.reconstruct_bucket_counter[0];
             auto eqgt = Base::compute_equal_quota_and_prefix(cnt_gt, cnt_eq, topk, warp_idx, lane_idx, eq_pass_warp_cnt);
-            return {pivot_value_bits, eqgt.start_pos_in_collector, eqgt.eq_quota};
+            return {pivot_value_bits, eqgt.start_pos_in_collector, eqgt.eq_quota, cnt_nan};
         };
 
         auto reconstruct = [&](uint32_t cur_extra_len) -> uint32_t {
@@ -270,14 +272,11 @@ public:
             for_each_value(histogram_radix_msb_one);
             __syncthreads();
 
-            uint32_t e_lo = 2 * b128_base;
-            uint32_t e_hi = e_lo + 2 * num_my_128b;
-            uint32_t my_num_pads = Base::count_overlap_range(e_lo, e_hi, (uint32_t)args.topk, MAX_TOPK)
-                        + Base::count_overlap_range(e_lo, e_hi, MAX_TOPK + cur_extra_len, MAX_TOPK + padded_extra_len);
-
             uint32_t topk = args.topk;
-            uint32_t num_nan_pads = (MAX_TOPK - topk) + (padded_extra_len - cur_extra_len);
-            auto [pivot_value_bits, start_pos_in_collector, eq_quota] = compute_pivot_and_quota(topk, num_nan_pads, for_each_value, my_num_pads);
+            auto [pivot_value_bits, start_pos_in_collector, eq_quota, cnt_nan] = compute_pivot_and_quota(topk, for_each_value);
+            // Every NaN the main loop collected is part of the buffer this census just walked (the hit test
+            // is `.gtu`, so NaN always becomes an incomer); the CTA-wide OR happens at the end.
+            have_nan |= cnt_nan != 0;
 
             {
                 uint32_t out_ptr = cute::cast_smem_ptr_to_uint(smem.surviving_topk_pairs[survivor_buf_idx ^ 1]) + start_pos_in_collector * (uint32_t)sizeof(uint64_t);
@@ -378,10 +377,6 @@ public:
             __syncthreads();    // publish the round-1 histogram; also the last read of init_buf
 
             static_assert(NUM_ELEMS_IN_INIT_WINDOW <= 0xFFFF);
-            uint32_t tail_padding_elems = num_local_tail_elems_padded - (end_vocab_idx - num_perm_elems);
-            uint32_t pad_lo = max(my_elem_start_idx, num_local_tail_elems);
-            uint32_t pad_hi = min(my_elem_start_idx + num_my_elems, num_local_tail_elems_padded);
-            uint32_t my_num_pads = pad_hi > pad_lo ? pad_hi - pad_lo : 0u;
             
             auto for_each_init_value = [&](const auto &fn) {
                 CUTE_UNROLL
@@ -390,7 +385,10 @@ public:
                     fn(init_values[i]);
                 }
             };
-            auto [pivot_value_bits, start_pos_in_collector, eq_quota] = compute_pivot_and_quota(args.topk, tail_padding_elems, for_each_init_value, my_num_pads);
+            auto [pivot_value_bits, start_pos_in_collector, eq_quota, cnt_nan] = compute_pivot_and_quota(args.topk, for_each_init_value);
+            // The init census walks the thread's whole slice of the window, i.e. every element of the init
+            // window exactly once, so NaNs inside the window are caught here.
+            have_nan |= cnt_nan != 0;
 
             {
                 uint32_t out_ptr = cute::cast_smem_ptr_to_uint(smem.surviving_topk_pairs[0]) + start_pos_in_collector * (uint32_t)sizeof(uint64_t);
@@ -480,7 +478,7 @@ public:
                     asm volatile (
                         "{\n"
                         ".reg .pred p;\n"
-                        "setp.gtu.f32 p, %1, %2;\n" // Use .gtu to unconditionally accept NaN
+                        "setp.gtu.f32 p, %1, %2;\n" // .gtu: NaN always counts as a hit, so every NaN reaches the incoming buffer and the census reports it
                         "@p or.b32 %0, %0, %3;\n"
                         "}\n"
                         : "+r"(hit_mask)

@@ -97,7 +97,6 @@ public:
         }
 
         uint32_t survivor_buf_idx = 0;  // current candidate buffer (A/B, swapped by reconstruct)
-        bool nan_seen = false;
 
         BF16Base::init_shared_memory(smem, warp_idx, [&]{
             smem.gather_val_bar.init(1);
@@ -141,15 +140,18 @@ public:
         uint32_t warp_round_limit = ku::ceil_div(warp_rem_segs, (uint32_t)NUM_SEGS_PER_ROUND);
 
         // Each CTA gets its local top-k elements
-        uint32_t topk_len = BF16Base::template scan_segs<true>(
+        bool nan_seen = false;
+        BF16Base::template scan_segs<true>(
             tma_params, smem, 
             batch_idx, end_vocab_idx, args.topk, warp_idx, lane_idx,
             num_perm_segs, local_start_seg_idx, num_local_perm_segs, num_local_tail_elems_padded, num_local_tail_elems,
-            survivor_buf_idx, nan_seen, 
+            survivor_buf_idx, 
+            nan_seen,
             [&](uint32_t m) { return m < warp_round_limit; }
         );     
 
-        nan_seen = __syncthreads_or(nan_seen) != 0; 
+        // CTA-wide OR; this is also the barrier that makes the scan's writes to the survivor buffer visible to the gather below
+        nan_seen = __syncthreads_or(nan_seen) != 0;
 
         // The cluster barrier must not complete before every CTA has finished its own scan: the gather
         // below writes into CTA0's shared memory, so a CTA that finished early would otherwise clobber
@@ -176,7 +178,7 @@ public:
             }
             st_async_32b(
                 cute::set_block_rank(cute::cast_smem_ptr_to_uint(smem.gathered_num_survivors + rank_in_cluster), 0),
-                topk_len | ((uint32_t)nan_seen << 31),
+                (uint32_t)nan_seen,
                 smem.gather_val_bar
             );
         }
@@ -221,10 +223,8 @@ public:
 
         static_assert(Config::cluster_size <= 32);
         uint32_t stored_num_survivors = lane_idx < Config::cluster_size ? smem.gathered_num_survivors[lane_idx] : 0u;
-        uint32_t sum_topk_len = __reduce_add_sync(0xFFFFFFFF, stored_num_survivors & 0x7FFFFFFFu);
-        nan_seen |= (stored_num_survivors >> 31) != 0;
-        
-        uint32_t num_nan_pads = NUM_GATHER_PAIRS - sum_topk_len;
+        nan_seen |= stored_num_survivors;
+
         uint32_t unit_base = threadIdx.x * NUM_UINT32_GATHER_PER_THREAD;
         uint32_t num_my_units = unit_base < NUM_GATHER_UNITS ? min((uint32_t)NUM_UINT32_GATHER_PER_THREAD, NUM_GATHER_UNITS - unit_base) : 0u;
 
@@ -239,7 +239,8 @@ public:
         __syncthreads();
 
         auto [pivot_value_x2_bits, out_prefix, eq_quota, cnt_nan] =
-            BF16Base::template compute_pivot_and_quota<true>(args.topk, num_nan_pads, values, num_my_units, warp_idx, lane_idx, smem);
+            BF16Base::template compute_pivot_and_quota<true>(args.topk, values, num_my_units, warp_idx, lane_idx, smem);
+        nan_seen |= cnt_nan != 0;
 
         smem.gather_bar.wait(0);
         __syncthreads();

@@ -185,7 +185,7 @@ struct EpilogueRunner {
             } else {
                 // Load & cast & save indices
                 constexpr uint32_t NUM_OUTPUT_IDX_PER_ROUND = cute::min(NUM_BYTES_PER_SMEM_STORE / sizeof(uint32_t), NUM_BYTES_PER_GMEM_STORE / sizeof(OutIdxT));
-                #pragma unroll 2     // TODO Tweak
+                #pragma unroll 2
                 for (uint32_t i = threadIdx.x * NUM_OUTPUT_IDX_PER_ROUND; i < args.topk; i += NUM_THREADS * NUM_OUTPUT_IDX_PER_ROUND) {
                     uint32_t indices_u32[NUM_OUTPUT_IDX_PER_ROUND];
                     OutIdxT out[NUM_OUTPUT_IDX_PER_ROUND];
@@ -287,8 +287,8 @@ public:
     using OutIdxT = Config::OutIdxT;
     static_assert(std::is_same_v<ValueT, nv_bfloat16> || std::is_same_v<ValueT, float>);
     
-    static constexpr uint32_t PLACEHOLDER_U32 = std::is_same_v<ValueT, nv_bfloat16> ? 0x7fff : 0x7fffffff; // NaN
-    static constexpr uint64_t PLACEHOLDER_B64 = std::is_same_v<ValueT, nv_bfloat16> ? 0x7fff7fff7fff7fff : 0x7fffffff7fffffff; 
+    static constexpr uint32_t PLACEHOLDER_U32 = std::is_same_v<ValueT, nv_bfloat16> ? 0xff80 : 0xff800000; // -INF
+    static constexpr uint64_t PLACEHOLDER_B64 = std::is_same_v<ValueT, nv_bfloat16> ? 0xff80ff80ff80ff80 : 0xff800000ff800000; 
     static constexpr uint64_t PLACEHOLDER_PAIR = (uint64_t)PLACEHOLDER_U32 << 32;
     
     static constexpr uint32_t TARGET_OCCUPANCY = Config::target_occupancy;
@@ -474,12 +474,6 @@ public:
         return u ^ ((u >> 3) & (7));
     }
 
-    static __device__ __forceinline__
-    uint32_t count_overlap_range(uint32_t my_lo, uint32_t my_hi, uint32_t nan_lo, uint32_t nan_hi) {
-        int32_t v = (int32_t)min(my_hi, nan_hi) - (int32_t)max(my_lo, nan_lo);
-        return v > 0 ? (uint32_t)v : 0u;
-    }
-
     struct EqGtPrefix { uint32_t start_pos_in_collector; uint32_t eq_quota; };
     // Given local > pivot and == pivot counts, compute this thread's output prefix (start position in the final output buffer) and how many equal
     // elements it may still append (eq_quota).
@@ -601,8 +595,8 @@ public:
     template<typename ExtraBarInitF>
     static __device__ __forceinline__
     void init_shared_memory(SharedMemoryPlanBase &smem, uint32_t warp_idx, ExtraBarInitF &&init_extra_bar_func) {
+        // Pad unused elements in `surviving_topk_pairs` as `-INF` to avoid being selected
         static_assert((2 * MAX_TOPK) % NUM_THREADS == 0);
-        // TODO Use wider write
         CUTE_UNROLL
         for (uint32_t i = 0; i < MAX_TOPK / NUM_THREADS; ++i) {
             smem.surviving_topk_pairs[0][i * NUM_THREADS + threadIdx.x] = PLACEHOLDER_PAIR;
@@ -623,7 +617,6 @@ public:
             init_extra_bar_func();
             cutlass::arch::fence_barrier_init();
         }
-        // TODO Do we need cluster sync here?
         __syncthreads();
     }
 
@@ -716,8 +709,8 @@ public:
         }
     }
 
-    // Fill the invalid (padded) tail segments with PLACEHOLDER (NaN).
-    // TMA only loads the real tail elements; the unused padded tail region must still be initialized as NaN
+    // Fill the invalid (padded) tail segments with PLACEHOLDER (-INF).
+    // TMA only loads the real tail elements; the unused padded tail region must still be initialized as -INF
     static __device__ __forceinline__ void fill_padded_tail_segments(ValueT *init_buf, uint32_t num_tail_elems) {
         uint32_t tail_covered_by_tma = ku::ceil(num_tail_elems, (uint32_t)NUM_ELEMS_PER_SEG);
         constexpr __int128_t FILLER_128b = ((__int128_t)PLACEHOLDER_B64 << 64) | PLACEHOLDER_B64;
@@ -899,7 +892,7 @@ public:
     static constexpr uint32_t NUM_UINT32_RECONSTRUCT_PER_THREAD =
         ((NUM_RECONSTRUCT_UNITS_MAX + NUM_THREADS - 1) / NUM_THREADS) | 1u; // padding
     static_assert(2 * NUM_UINT32_RECONSTRUCT_PER_THREAD <= 256);
-    static constexpr uint16_t PLACEHOLDER = 0x7fff; // NaN
+    static constexpr uint16_t PLACEHOLDER = 0xff80; // -INF
     static constexpr uint32_t NEG_INF_X2_BITS = 0xFF80FF80u;
 
     // Histogram pass 1 (MSB radix): for each distorted bf16x2 value, retrieve the upper 8 bits and performs atomicAdd on the bucket counter
@@ -970,7 +963,7 @@ public:
         }
     }
 
-    // Count the number of elements that are 1) > pivot 2) = pivot 3) is NaN in the given array
+    // Count the number of elements that are 1) > pivot 2) = pivot 3) NaN in the given array
     struct CensusCounts { uint32_t cnt_gt; uint32_t cnt_eq; uint32_t cnt_nan; };
     // `num_packed_values` should be guaranteed to be aligned by `NUM_PACKED_VALUES_ALIGNMENT`
     template<uint32_t N, uint32_t NUM_PACKED_VALUES_ALIGNMENT = 1>
@@ -987,24 +980,21 @@ public:
             asm volatile (
                 "{\n"
                 ".reg .b32 gt_result, eq_result;\n"
-                "set.gt.bf16x2.bf16x2 gt_result, %2, %3;\n"
+                "set.gt.bf16x2.bf16x2 gt_result, %3, %4;\n"
                 "add.rn.bf16x2 %0, gt_result, %0;\n"
-                "set.eq.bf16x2.bf16x2 eq_result, %2, %3;\n"
+                "set.eq.bf16x2.bf16x2 eq_result, %3, %4;\n"
                 "add.rn.bf16x2 %1, eq_result, %1;\n"
+                "min.NaN.bf16x2 %2, %2, %3;\n"  // We use `min.NaN` for NaN detection
                 "}\n"
-                : "+r"(*(uint32_t*)&gt_accum), "+r"(*(uint32_t*)&eq_accum)
+                : "+r"(*(uint32_t*)&gt_accum), "+r"(*(uint32_t*)&eq_accum), "+r"(*(uint32_t*)&nan_accum)
                 : "r"(raw), "r"(pivot_value_x2_bits)
             );
-            asm ("{\n"
-                ".reg .b32 nan_result;\n"
-                "set.nan.bf16x2.bf16x2 nan_result, %1, %1;\n"
-                "add.rn.bf16x2 %0, nan_result, %0;\n"
-                "}\n"
-                : "+r"(*(uint32_t*)&nan_accum) : "r"(raw));
         }
         uint32_t cnt_gt = (uint32_t)(float)(gt_accum.x + gt_accum.y);
         uint32_t cnt_eq = (uint32_t)(float)(eq_accum.x + eq_accum.y);
-        uint32_t cnt_nan = (uint32_t)(float)(nan_accum.x + nan_accum.y);
+        uint32_t nan_flag;
+        asm ("set.nan.bf16x2.bf16x2 %0, %1, %1;" : "=r"(nan_flag) : "r"(*(uint32_t*)&nan_accum));
+        uint32_t cnt_nan = nan_flag != 0 ? 1u : 0u;
         return {cnt_gt, cnt_eq, cnt_nan};
     }
 
@@ -1110,16 +1100,16 @@ public:
     // `num_my` should be guaranteed to be aligned by `NUM_PACKED_VALUES_ALIGNMENT`
     template<bool USE_CLUSTER_ADDRESSING, uint32_t N, uint32_t NUM_PACKED_VALUES_ALIGNMENT = 1>
     static __device__ __forceinline__
-    PivotAndQuota compute_pivot_and_quota(uint32_t topk, uint32_t num_nan_pads, const nv_bfloat162 (&values)[N],
-                                       uint32_t num_my, uint32_t warp_idx, uint32_t lane_idx, SharedMemoryPlanBase &smem) {
+    PivotAndQuota compute_pivot_and_quota(uint32_t topk, const nv_bfloat162 (&values)[N],
+                                       uint32_t num_values, uint32_t warp_idx, uint32_t lane_idx, SharedMemoryPlanBase &smem) {
         if (warp_idx == 0) {
-            Base::template find_pivot_in_histogram<false>(smem, smem.reconstruct_bucket_counter[0], topk + num_nan_pads, lane_idx);
+            Base::template find_pivot_in_histogram<false>(smem, smem.reconstruct_bucket_counter[0], topk, lane_idx);
         }
         __syncthreads();
         uint32_t pivot_hi8 = smem.reconstruct_pivot_bucket;
         uint32_t num_elem_should_select_in_pivot_bucket = smem.reconstruct_num_should_select;
 
-        histogram_radix_lsb_for_pivot_msb<USE_CLUSTER_ADDRESSING, N, NUM_PACKED_VALUES_ALIGNMENT>(smem.reconstruct_bucket_counter[1], pivot_hi8, values, num_my);
+        histogram_radix_lsb_for_pivot_msb<USE_CLUSTER_ADDRESSING, N, NUM_PACKED_VALUES_ALIGNMENT>(smem.reconstruct_bucket_counter[1], pivot_hi8, values, num_values);
         __syncthreads();
 
         if (warp_idx == 0) {
@@ -1131,7 +1121,7 @@ public:
         uint16_t pivot_value = un_distort((uint16_t)pivot_distorted);
         uint32_t pivot_value_x2_bits = ((uint32_t)pivot_value << 16) | pivot_value;
 
-        auto census = get_census_counts<N, NUM_PACKED_VALUES_ALIGNMENT>(values, num_my, pivot_value_x2_bits);
+        auto census = get_census_counts<N, NUM_PACKED_VALUES_ALIGNMENT>(values, num_values, pivot_value_x2_bits);
 
         static_assert(NUM_WARPS <= NUM_RECONSTRUCT_BUCKETS);
         auto eqgt = Base::compute_equal_quota_and_prefix(census.cnt_gt, census.cnt_eq, topk, warp_idx, lane_idx, smem.reconstruct_bucket_counter[0]);
@@ -1241,7 +1231,7 @@ public:
                 if (i == num_init_rounds) break;
                 smem.init_full_bar[i].wait(0);
 
-                // Fill the incomplete segment with PLACEHOLDER (the largest NaN)
+                // Fill the incomplete segment with PLACEHOLDER (-INF)
                 if (num_local_tail_elems % NUM_ELEMS_PER_SEG != 0 && i == num_local_tail_elems / NUM_ELEMS_PER_ROUND) {
                     uint32_t box_end = ku::ceil_div(num_local_tail_elems, (uint32_t)NUM_ELEMS_PER_SEG) * NUM_ELEMS_PER_SEG;
                     for (uint32_t e = num_local_tail_elems + threadIdx.x; e < box_end; e += NUM_THREADS) {
@@ -1276,17 +1266,13 @@ public:
             // The CTA's init-window slice may contain fewer real elements than K (e.g. a cluster
             // rank whose visit range mostly overlaps the padded tail). In that case the pivot
             // selection must degrade to "select all real elements": cap the K used in the pivot /
-            // quota computation at the real count, and count ALL tail pads as winners. This keeps
-            // `effective_K + tail_padding_elems <= live_elems`, so find_pivot_in_histogram always writes its
-            // result instead of reading stale smem (which would drop real pairs and leak
-            // placeholder pairs into the output).
+            // quota computation at the real count
             uint32_t effective_topk = min(topk, num_real_init_elems);
-            uint32_t pad_lo = max(my_elem_start_idx, num_local_tail_elems);
-            uint32_t pad_hi = min(my_elem_start_idx + num_my_elems, num_local_tail_elems_padded);
-            uint32_t my_num_pad_elems = pad_hi > pad_lo ? pad_hi - pad_lo : 0u;
             auto [pivot_value_x2_bits, start_pos_in_collector, eq_quota, cnt_nan] = 
-                compute_pivot_and_quota<USE_CLUSTER_ADDRESSING, NUM_UINT32_IN_INIT_WINDOW_PER_THREAD, 4>(effective_topk, tail_padding_elems, init_values, num_my_elems / 2, warp_idx, lane_idx, smem);
-            have_nan |= cnt_nan != my_num_pad_elems;
+                compute_pivot_and_quota<USE_CLUSTER_ADDRESSING, NUM_UINT32_IN_INIT_WINDOW_PER_THREAD, 4>(effective_topk, init_values, num_my_elems / 2, warp_idx, lane_idx, smem);
+            // The init census walks the thread's whole slice of the window, i.e. every element of the init
+            // window exactly once, so NaNs inside the window are caught here.
+            have_nan |= cnt_nan != 0;
 
             {
                 uint32_t smem_base = cute::cast_smem_ptr_to_uint(smem.surviving_topk_pairs[0]);
@@ -1370,14 +1356,11 @@ public:
             histogram_radix_msb(smem.reconstruct_bucket_counter[0], values, num_my_units);
             __syncthreads();
 
-            uint32_t e_lo = 2 * unit_base;
-            uint32_t e_hi = e_lo + 2 * num_my_units;
-            uint32_t my_num_pads = Base::count_overlap_range(e_lo, e_hi, topk, MAX_TOPK) + Base::count_overlap_range(e_lo, e_hi, MAX_TOPK + cur_extra_len, MAX_TOPK + padded_extra_len);
-
-            uint32_t num_nan_pads = (MAX_TOPK - topk) + (padded_extra_len - cur_extra_len);
             auto [pivot_value_x2_bits, out_prefix, eq_quota, cnt_nan] = 
-                compute_pivot_and_quota<USE_CLUSTER_ADDRESSING>(topk, num_nan_pads, values, num_my_units, warp_idx, lane_idx, smem);
-            have_nan |= cnt_nan != my_num_pads;
+                compute_pivot_and_quota<USE_CLUSTER_ADDRESSING>(topk, values, num_my_units, warp_idx, lane_idx, smem);
+            // Every NaN that the main loop collected is part of the buffer this census just walked (the hit
+            // test is `.gtu`, so NaN always becomes an incomer).
+            have_nan |= cnt_nan != 0;
 
             { // write back
                 uint32_t out_ptr = cute::cast_smem_ptr_to_uint(smem.surviving_topk_pairs[survivor_buf_idx ^ 1]) + out_prefix * (uint32_t)sizeof(uint64_t);
@@ -1431,8 +1414,8 @@ public:
                     asm volatile (
                         "{\n"
                         ".reg .b32 r0, r1, ind, nib;\n"
-                        "set.gtu.s32.bf16x2 r0, %1, %3;\n"  // Use .gtu so that NaN is always accepted
-                        "set.gtu.s32.bf16x2 r1, %2, %3;\n"  // set with .s32 fills the corresponding 16bit to 0xFFFF (-1) when the condition holds. We use `prmt` to extract one bit from each 
+                        "set.gtu.s32.bf16x2 r0, %1, %3;\n"   // .gtu: NaN always counts as a hit, so every NaN reaches the incoming buffer and the census below reports it. 
+                        "set.gtu.s32.bf16x2 r1, %2, %3;\n"   // `set` with .s32 fills the corresponding 16bit to 0xFFFF (-1) when the condition holds. We use `prmt` to extract one bit from each 
                         "prmt.b32 ind, r0, r1, 0x7531;\n"
                         "dp4a.s32.s32 nib, ind, 0xF8FCFEFF, 0;\n"   // ind's bytes are 0x00/0xFF, so with signed byte weights each hit contributes 1/2/4/8
                         "mad.lo.u32 %0, %0, 16, nib;\n"

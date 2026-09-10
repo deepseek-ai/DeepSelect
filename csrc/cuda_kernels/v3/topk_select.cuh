@@ -87,7 +87,8 @@ public:
             num_perm_segs,
             num_tail_elems_padded,
             end_vocab_idx - num_perm_elems, 
-            survivor_buf_idx, have_nan, 
+            survivor_buf_idx, 
+            have_nan,
             [&](uint32_t m) {
                 if constexpr (HAS_PARTIAL_ROUNDS) {
                     return (num_init_rounds + m) * NUM_SEGS_PER_ROUND + warp_idx < NUM_TAIL_SEGS + num_perm_segs;
@@ -97,6 +98,8 @@ public:
             }
         );     
 
+        // `__syncthreads_or` is also the barrier that makes the last `reconstruct`'s writes visible before
+        // `stage_output_and_epilogue` reads the survivor buffer.
         have_nan = __syncthreads_or(have_nan) != 0;
         if (have_nan) {
             BF16Base::take_action_when_have_nan(args, batch_idx);
