@@ -29,7 +29,6 @@ def topk(
     value_oob_fill_value: float = float("-inf"),
     return_value: bool = True,
     abort_when_nan_found: bool = True,
-    do_check_nan: bool = True,
 ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
     """
     Arguments:
@@ -48,8 +47,7 @@ def topk(
         idx_oob_fill_value: int. See comments above when end[i]-begin[i]<topk.
         return_value: bool. If False, only return indices without values to accelerate the kernel. The return value is still a Tuple, but the first element will be None.
         abort_when_nan_found: bool. When a NaN is found, if True, aborts the whole kernel; if False, writes 0x3F3F3F3F to the corresponding output_idx[batch_idx][0] and exits.
-        do_check_nan: bool. Whether to check the input for NaN. 
-                Exception: when the row's length <= topk, nan check will never be enabled.
+                The NaN check itself is always enabled. Exception: when the row's length <= topk, it is skipped.
 
     Return:
         output_val: (b, topk), dtype=input.dtype.
@@ -88,7 +86,6 @@ def topk(
         value_oob_fill_value,
         return_value,
         abort_when_nan_found,
-        do_check_nan,
     )
     _backend.topk(*backend_args)
     return output_val, output_idx

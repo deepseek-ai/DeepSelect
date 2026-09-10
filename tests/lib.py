@@ -202,7 +202,6 @@ class TestParam:
     input_distrib: Distribution = NormalFloatDistribution()
     idx_oob_fill_value: int = -2147483647
     value_oob_fill_value: float = -1234123412341234
-    do_check_nan: bool = True
 
     seed: int = -1
     check_correctness: bool = True

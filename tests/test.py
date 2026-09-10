@@ -46,7 +46,6 @@ def run_testcase(p: TestParam):
             idx_oob_fill_value=p.idx_oob_fill_value,
             value_oob_fill_value=p.value_oob_fill_value,
             return_value=p.return_value,
-            do_check_nan=p.do_check_nan,
             abort_when_nan_found=False
         )
 
@@ -78,7 +77,6 @@ def run_testcase(p: TestParam):
         # Assert: index[0] = 0x3F3F3F3F for rows contain NaN
         valid_nan_guard = ans_topk_index[has_nan_mask, 0] == 0x3F3F3F3F
         valid_nan_guard |= p.vocab_size <= p.topk if t.end is None else t.end[has_nan_mask] <= p.topk
-        valid_nan_guard |= not p.do_check_nan    
         is_correct &= kk.check_is_bitwise_equal("NaN guard", valid_nan_guard, torch.ones_like(valid_nan_guard))
 
         selected_mask &= ~has_nan_mask.unsqueeze(1)

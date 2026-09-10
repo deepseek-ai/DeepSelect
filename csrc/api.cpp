@@ -27,8 +27,7 @@ void topk(
     int idx_oob_fill_value,
     float value_oob_fill_value,
     bool return_value,
-    bool abort_when_nan_found,
-    bool do_check_nan
+    bool abort_when_nan_found
 ) {
     int batch_size = input.size(0);
     int vocab_size = input.size(1);
@@ -36,7 +35,6 @@ void topk(
     at::ScalarType output_index_t = output_index.scalar_type();
 
     TORCH_CHECK(topk > 0, "topk must > 0");
-    TORCH_CHECK(do_check_nan, "`do_check_nan` must be True; NaN checking is always enabled on CUDA");
     TORCH_CHECK(!(sorted_value && !return_value), "`return_value` must be enabled when `sorted_value` is True");
     TORCH_CHECK(!(sorted_value && sorted_index), "`sorted_value` and `sorted_index` cannot be used at the same time");
     // Contract: sorted_value is a 32-bit-value-only feature.
@@ -114,7 +112,6 @@ void topk(
         idx_oob_fill_value,
         value_oob_fill_value,
         abort_when_nan_found,
-        do_check_nan,
 
         device_prop->sharedMemPerBlockOptin,
         at::cuda::getCurrentCUDAStream().stream()
