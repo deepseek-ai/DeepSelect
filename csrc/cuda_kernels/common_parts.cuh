@@ -93,6 +93,21 @@ void st_global(ValueT* ptr, ValueT src[NUM_VALUES]) {
     }
 }
 
+// Keep vector stores for complete chunks; callers own only the logical row,
+// even when its backing storage contains additional elements.
+template<uint32_t NUM_VALUES, typename ValueT>
+__device__ __forceinline__
+void st_global_bounded(ValueT* ptr, ValueT src[NUM_VALUES], uint32_t remaining) {
+    if (remaining >= NUM_VALUES) {
+        st_global<NUM_VALUES>(ptr, src);
+    } else {
+        CUTE_UNROLL
+        for (uint32_t j = 0; j < NUM_VALUES; ++j)
+            if (j < remaining)
+                ptr[j] = src[j];
+    }
+}
+
 template<
     typename Config,
     uint32_t MAX_TOPK,
@@ -165,7 +180,7 @@ struct EpilogueRunner {
                     CUTE_UNROLL
                     for (uint32_t j = 0; j < NUM_OUTPUT_IDXS_PER_STORE; ++j)
                         out[j] = i+j < end_vocab_idx ? (OutIdxT)(i+j) + output_idx_offset : args.idx_oob_fill_value;
-                    STORE_TO_GMEM(result_indices + i, out);
+                    st_global_bounded<NUM_OUTPUT_IDXS_PER_STORE>(result_indices + i, out, args.topk - i);
                 }
 
                 // Save values into `result_values`, if `RETURN_VALUE` is `True`
@@ -179,7 +194,7 @@ struct EpilogueRunner {
                         CUTE_UNROLL
                         for (uint32_t j = 0; j < NUM_VALUES_PER_LOAD_STORE; ++j)
                             values[j] = i+j < end_vocab_idx ? values[j] : oob_fill_value;
-                        STORE_TO_GMEM(result_values + i, values);
+                        st_global_bounded<NUM_VALUES_PER_LOAD_STORE>(result_values + i, values, args.topk - i);
                     }
                 }
             } else {
@@ -193,7 +208,7 @@ struct EpilogueRunner {
                     CUTE_UNROLL
                     for (uint32_t j = 0; j < NUM_OUTPUT_IDX_PER_ROUND; ++j)
                         out[j] = (OutIdxT)indices_u32[j] + output_idx_offset;
-                    st_global<NUM_OUTPUT_IDX_PER_ROUND>(result_indices + i, out);
+                    st_global_bounded<NUM_OUTPUT_IDX_PER_ROUND>(result_indices + i, out, args.topk - i);
                 }
 
                 if constexpr (Config::return_value) {
@@ -203,7 +218,7 @@ struct EpilogueRunner {
                     for (uint32_t i = threadIdx.x * NUM_VALUES_PER_ROUND; i < args.topk; i += NUM_THREADS * NUM_VALUES_PER_ROUND) {
                         UIntValueT values[NUM_VALUES_PER_ROUND];
                         ld_shared<NUM_VALUES_PER_ROUND>(values, (UIntValueT*)(smem_value_buf + i));
-                        st_global<NUM_VALUES_PER_ROUND>((UIntValueT*)(result_values + i), values);
+                        st_global_bounded<NUM_VALUES_PER_ROUND>((UIntValueT*)(result_values + i), values, args.topk - i);
                     }
                 }
             }
@@ -258,15 +273,15 @@ struct EpilogueRunner {
                 auto store = [&]<uint32_t NUM_VALUES, typename T>(T* dst, T src[NUM_VALUES]) {
                     constexpr uint32_t NUM_BYTES_TO_STORE = NUM_VALUES * sizeof(T);
                     if constexpr (NUM_BYTES_TO_STORE <= NUM_BYTES_PER_GMEM_STORE) {
-                        // Don't need to do OOB check because the output array is at least padded to the maximum width of global store.
-                        st_global<NUM_VALUES>(dst, src);
+                        st_global_bounded<NUM_VALUES>(dst, src, args.topk - thread_offset);
                     } else {
                         static_assert(NUM_BYTES_TO_STORE % NUM_BYTES_PER_GMEM_STORE == 0);
                         CUTE_UNROLL
                         for (uint32_t i = 0; i < NUM_BYTES_TO_STORE; i += NUM_BYTES_PER_GMEM_STORE) {
                             uint32_t elem_offset = i / sizeof(T);
                             if (thread_offset + elem_offset < args.topk)
-                                STORE_TO_GMEM(dst+elem_offset, src+elem_offset);
+                                st_global_bounded<NUM_BYTES_PER_GMEM_STORE / sizeof(T)>(
+                                    dst+elem_offset, src+elem_offset, args.topk - thread_offset - elem_offset);
                         }
                     }
                 };
