@@ -88,6 +88,34 @@ void topk(
         check_dim0_stride("value", *output_value, OUTPUT_STRIDE_ALIGNMENT_REQUIREMENT);
     }
 
+    // Row strides do not guarantee alignment of a sliced tensor's first row.
+    auto check_pointer_alignment = [](const char* name, const torch::Tensor& tensor) {
+        TORCH_CHECK(reinterpret_cast<uintptr_t>(tensor.data_ptr()) % 32 == 0,
+                    name, ".data_ptr() must be 32-byte aligned");
+    };
+    check_pointer_alignment("input", input);
+    check_pointer_alignment("output_index", output_index);
+    if (output_value.has_value())
+        check_pointer_alignment("output_value", *output_value);
+    TORCH_CHECK(batch_size <= 1 || output_index.stride(0) >= topk,
+                "output_index rows must not overlap");
+    if (output_value.has_value())
+        TORCH_CHECK(batch_size <= 1 || output_value->stride(0) >= topk,
+                    "output_value rows must not overlap");
+
+    // The 3D TMA descriptor rounds the vocabulary dimension up to 128 bytes.
+    // The final row needs actual backing storage for that padding as well.
+    if (batch_size > 0 && vocab_size > 0) {
+        const uint64_t itemsize = input.element_size();
+        const uint64_t row_bytes = uint64_t(vocab_size) * itemsize;
+        const uint64_t padded_row_bytes = (row_bytes + 127) / 128 * 128;
+        const uint64_t last_row_offset =
+            (uint64_t(input.storage_offset()) + uint64_t(batch_size - 1) * input.stride(0)) * itemsize;
+        const uint64_t storage_bytes = input.storage().nbytes();
+        TORCH_CHECK(last_row_offset <= storage_bytes && padded_row_bytes <= storage_bytes - last_row_offset,
+                    "input backing storage must include the final row padded to a multiple of 128 bytes");
+    }
+
     cudaDeviceProp* device_prop = at::cuda::getDeviceProperties(at::cuda::current_device());
     TORCH_CHECK(device_prop != nullptr);
     TopkSelectArgs args = {

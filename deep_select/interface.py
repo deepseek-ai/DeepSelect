@@ -33,6 +33,7 @@ def topk(
     """
     Arguments:
         input: (b, vocab_size), dtype=torch.bfloat16/torch.float. stride(0) must be a multiple of `deep_select.get_stride_requirement()[0]` bytes, and stride(1) must be 1.
+               The data pointer must be 32-byte aligned. Backing storage must extend through the final row rounded up to 128 bytes; allocate padded rows before slicing to vocab_size.
         topk: int. Select topk elements for each row.
         sorted: bool. Whether to return sorted **output_val**. Only supports fp32.
         begin(optional): (b,), dtype=int32. CURRENTLY NOT SUPPORTED. The left(inclusive) range for input row, default is 0.
@@ -42,7 +43,7 @@ def topk(
         indices_type: torch.dtype. The output indices dtype, only support torch.int32 and torch.int64.
         sorted_index: bool. Whether to return sorted **output_idx**.
         hint(optional): CURRENTLY NOT SUPPORTED
-        output_idx(optional): (b, topk), dtype=indices_type. A contiguous tensor to store output.
+        output_idx(optional): (b, topk), dtype=indices_type. stride(1) must be 1, stride(0) in bytes must be a multiple of `deep_select.get_stride_requirement()[1]`, and the data pointer must be 32-byte aligned. Only the logical output elements are written; no trailing storage padding is required.
         output_idx_offset(optional): (b,), dtype=int32. If provided, all output_idx (`idx_oob_fill_value` not included) will += output_idx_offset.
         idx_oob_fill_value: int. See comments above when end[i]-begin[i]<topk.
         return_value: bool. If False, only return indices without values to accelerate the kernel. The return value is still a Tuple, but the first element will be None.

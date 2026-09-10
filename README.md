@@ -81,9 +81,9 @@ values, indices = deep_select.topk(
 # indices: (batch_size, topk) of indices_type
 ```
 
-The row stride of the input tensor (`x`) must be aligned to `deep_select.get_stride_requirement()[0]` bytes. For unaligned inputs, padding is necessary.
+The row stride of the input tensor (`x`) must be aligned to `deep_select.get_stride_requirement()[0]` bytes, and its data pointer must be 32-byte aligned. The backing allocation must include the final row rounded up to 128 bytes, because TMA loads complete 128-byte tiles. Allocate padded rows first, then slice to the logical vocabulary width; a row stride alone does not guarantee that the final row has padding.
 
-Both outputs are allocated by the call, and their strides are aligned to `deep_select.get_stride_requirement()[1]` bytes (so they may be non-contiguous). Pass `output_idx=` to write indices into a buffer you own, and that buffer must satisfy the same stride requirement.
+Both outputs are allocated by the call, and their strides are aligned to `deep_select.get_stride_requirement()[1]` bytes (so they may be non-contiguous). Pass `output_idx=` to write indices into a buffer you own. That buffer must satisfy the same stride requirement, have a 32-byte-aligned data pointer and non-overlapping rows, and be contiguous in its last dimension. Only its logical elements are written; storage padding after the final element is not required.
 
 For the full signature, see [`deep_select/interface.py`](deep_select/interface.py).
 
