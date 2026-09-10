@@ -32,6 +32,7 @@ def topk(
 ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
     """
     Arguments:
+        All tensor arguments must be on the same CUDA device as input. Execution uses that device's current stream.
         input: (b, vocab_size), dtype=torch.bfloat16/torch.float. stride(0) must be a multiple of `deep_select.get_stride_requirement()[0]` bytes, and stride(1) must be 1.
         topk: int. Select topk elements for each row.
         sorted: bool. Whether to return sorted **output_val**. Only supports fp32.

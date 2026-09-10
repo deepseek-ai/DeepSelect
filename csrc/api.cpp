@@ -3,6 +3,7 @@
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAEvent.h>
+#include <c10/cuda/CUDAGuard.h>
 
 #include "kerutils/supplemental/torch_tensors.h"
 
@@ -50,6 +51,17 @@ void topk(
     KU_CHECK_DEVICE(output_value);
     KU_CHECK_DEVICE(output_index);
     KU_CHECK_DEVICE(output_idx_offset);
+
+    TORCH_CHECK(output_index.device() == input.device(), "`output_index` must be on the same device as `input`");
+    if (end.has_value()) {
+        TORCH_CHECK(end->device() == input.device(), "`end` must be on the same device as `input`");
+    }
+    if (output_value.has_value()) {
+        TORCH_CHECK(output_value->device() == input.device(), "`output_value` must be on the same device as `input`");
+    }
+    if (output_idx_offset.has_value()) {
+        TORCH_CHECK(output_idx_offset->device() == input.device(), "`output_idx_offset` must be on the same device as `input`");
+    }
     
     KU_CHECK_SHAPE(input, batch_size, vocab_size);
     KU_CHECK_SHAPE(begin, batch_size);
@@ -88,7 +100,8 @@ void topk(
         check_dim0_stride("value", *output_value, OUTPUT_STRIDE_ALIGNMENT_REQUIREMENT);
     }
 
-    cudaDeviceProp* device_prop = at::cuda::getDeviceProperties(at::cuda::current_device());
+    const c10::cuda::CUDAGuard device_guard(input.device());
+    cudaDeviceProp* device_prop = at::cuda::getDeviceProperties(input.get_device());
     TORCH_CHECK(device_prop != nullptr);
     TopkSelectArgs args = {
         (uint32_t)batch_size,
@@ -114,7 +127,7 @@ void topk(
         abort_when_nan_found,
 
         device_prop->sharedMemPerBlockOptin,
-        at::cuda::getCurrentCUDAStream().stream()
+        at::cuda::getCurrentCUDAStream(input.get_device()).stream()
     };
 
     uint32_t num_sm = device_prop->multiProcessorCount;
