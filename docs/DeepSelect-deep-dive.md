@@ -6,10 +6,10 @@ In DeepSeek Sparse Attention (DSA), TopK is used to select the most relevant pos
 
 The pseudocode below captures the core flow of the algorithm. The actual implementation requires hardware-specific optimization.
 
-The algorithm keeps a top-$k$ threshold $T$, initialized to $-\infty$, and repeatedly performs three simple steps:
+The algorithm keeps a top-$`k`$ threshold $T$, initialized to $-\infty$, and repeatedly performs three simple steps:
 
 1. **Scan**: Process the input one block of size $B$ at a time, following a random block order.
-2. **Filter**: Filter elements using the current top-$k$ threshold $T$, and append only those that may still enter the top-$k$ to `topk_candidate` (i.e. $> T$).
+2. **Filter**: Filter elements using the current top-$`k`$ threshold $T$, and append only those that may still enter the top-$`k`$ to `topk_candidate` (i.e. $> T$).
 3. **Compact**: When the candidate buffer becomes large or at the end of the algorithm, run radix-select-based TopK in shared memory (or another TopK algorithm) to reduce it back to $k$ elements, and set $T$ to the smallest element among them.
 
 In the pseudocode below, $B$ denotes the input block size, while $B_2$ controls when `topk_candidate` is compacted. A reasonable configuration for $k=512$ is $B=B_2=1024$.
