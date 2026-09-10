@@ -411,7 +411,7 @@ public:
         constexpr CUtensorMapDataType dtype = std::is_same_v<ValueT, nv_bfloat16>
             ? CU_TENSOR_MAP_DATA_TYPE_BFLOAT16
             : CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
-        return ku::make_tensor_map(
+        return ku::make_tensor_map<3>(
             // Split args.vocab_size into two dims because
             //   - TMA requires innermost box dim <= swizzle size
             //   - To avoid OOB as we have `INPUT_STRIDE_ALIGNMENT_REQUIREMENT`
@@ -420,7 +420,7 @@ public:
                 ku::ceil_div((uint64_t)args.vocab_size, (uint64_t)NUM_ELEMS_PER_TMA_ROW),
                 args.batch_size
             },
-            ku::make_stride_helper<uint64_t>({NUM_ELEMS_PER_TMA_ROW, args.stride_input_batch}, sizeof(ValueT)),
+            {uint64_t(NUM_ELEMS_PER_TMA_ROW) * sizeof(ValueT), uint64_t(args.stride_input_batch) * sizeof(ValueT)},
             {
                 NUM_ELEMS_PER_TMA_ROW,
                 NUM_TMA_ROWS_PER_SEG,
