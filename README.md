@@ -4,6 +4,7 @@ DeepSelect is a high performance implementation of the TopK kernel used in DeepS
 
 ## News
 
+- 2026.09.10: We've released a brief analysis of the algorithm and its implementation: [English](docs/DeepSelect-deep-dive.md) | [中文](docs/DeepSelect-deep-dive.zh.md)
 - 2026.09.10: We've released DeepSelect v1.0.0
 
 ## Supported Cases
