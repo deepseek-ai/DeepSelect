@@ -59,6 +59,13 @@ git submodule update --init --recursive
 pip install -v .
 ```
 
+The extension is compiled for `sm_100a` and `sm_103a` by default. To build for
+Hopper GPUs such as H20/H100, select `sm_90a` explicitly:
+
+```bash
+DEEP_SELECT_CUDA_ARCHS=90a pip install -v .
+```
+
 ## Usage
 
 ```python

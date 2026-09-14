@@ -76,10 +76,9 @@ void topk(
         int64_t cur_stride = tensor.stride(0);
         uint64_t itemsize = tensor.dtype().itemsize();
         TORCH_CHECK(cur_stride * itemsize % alignment_requirement_bytes == 0,
-            std::format("{}.stride(0) (currently {} numbers) must be a multiple of {} Bytes ({} numbers)",
-                tensor_name, cur_stride,
-                alignment_requirement_bytes, alignment_requirement_bytes / itemsize
-            )
+            tensor_name, ".stride(0) (currently ", cur_stride,
+            " numbers) must be a multiple of ", alignment_requirement_bytes,
+            " Bytes (", alignment_requirement_bytes / itemsize, " numbers)"
         );
     };
     check_dim0_stride("input", input, INPUT_STRIDE_ALIGNMENT_REQUIREMENT);
@@ -125,12 +124,20 @@ void topk(
         TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
                     "vocab_size must be < 2^23 for bfloat16 input");
         TORCH_CHECK(topk <= 4096, "topk must be <= 4096");
-        if (batch_size <= 6 && (uint32_t)vocab_size >= 512u * 1024u && topk <= 1024) {  // TODO Tune
+        const uint32_t cluster_min_vocab_size =
+            device_prop->major == 9 ? 128u * 1024u : 512u * 1024u;
+        if (batch_size <= 6 && (uint32_t)vocab_size >= cluster_min_vocab_size &&
+            topk <= 1024) {
             INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
                 BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
                     BOOL_SWITCH(return_value, RETURN_VALUE, [&]() {
-                        topk_select_bf16_cluster::run_topk_select_kernel<
-                            TopkSelectConfig<nv_bfloat16, OutIdxT, false, SORTED_INDEX, RETURN_VALUE, 1024, 256, 1, 4096, 4096, 16, 512, 16>>(args);
+                        if (device_prop->major == 9) {
+                            topk_select_bf16_cluster::run_topk_select_kernel<
+                                TopkSelectConfig<nv_bfloat16, OutIdxT, false, SORTED_INDEX, RETURN_VALUE, 1024, 256, 1, 4096, 4096, 16, 512, 8>>(args);
+                        } else {
+                            topk_select_bf16_cluster::run_topk_select_kernel<
+                                TopkSelectConfig<nv_bfloat16, OutIdxT, false, SORTED_INDEX, RETURN_VALUE, 1024, 256, 1, 4096, 4096, 16, 512, 16>>(args);
+                        }
                     });
                 });
             });

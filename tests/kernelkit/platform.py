@@ -1,5 +1,6 @@
 import enum
 import functools
+import shutil
 import subprocess
 
 
@@ -13,9 +14,14 @@ def get_current_platform() -> Platform:
     """
     Get the current platform via `lspci`
     """
-    output = subprocess.check_output(["lspci"], text=True)
-    if "3D controller: NVIDIA Corporation Device" in output:
-        return Platform.CUDA
+    if shutil.which("lspci"):
+        output = subprocess.check_output(["lspci"], text=True)
+        if "NVIDIA" in output:
+            return Platform.CUDA
+    elif shutil.which("nvidia-smi"):
+        output = subprocess.check_output(["nvidia-smi", "-L"], text=True)
+        if "GPU " in output:
+            return Platform.CUDA
     return Platform.CPU_ONLY
 
 
