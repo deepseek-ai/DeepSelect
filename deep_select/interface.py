@@ -55,6 +55,15 @@ def topk(
                     The output tensors may not be contiguous, when topk * sizeof(input.dtype or indices_dtype) is not a multiple of 32 Bytes
     """
 
+    if begin is not None:
+        raise ValueError("`begin` is not supported now")
+    if hint is not None:
+        raise ValueError("`hint` is not supported now")
+    if output_idx is not None and output_idx.dtype != indices_type:
+        raise TypeError(
+            f"`output_idx` dtype ({output_idx.dtype}) must match `indices_type` ({indices_type})"
+        )
+
     N = input.shape[0]
 
     def get_empty_and_aligned_tensor(dim0: int, dim1: int, device: torch.device, dtype: torch.dtype):
@@ -70,11 +79,7 @@ def topk(
     output_val = get_empty_and_aligned_tensor(N, topk, device=input.device, dtype=input.dtype) if return_value else None
     if output_idx is None:
         output_idx = get_empty_and_aligned_tensor(N, topk, device=input.device, dtype=indices_type)
-    else:
-        assert output_idx.dtype == indices_type
 
-    assert begin is None, "`begin` is not supported now"
-    assert hint is None, "`hint` is not supported now"
     backend_args = (
         input,
         topk,
