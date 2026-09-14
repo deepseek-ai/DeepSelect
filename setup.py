@@ -9,6 +9,12 @@ import tests.kernelkit as kk
 
 exec(open("deep_select/__version__.py").read())
 
+CUDA_ARCHS = [
+    arch.strip()
+    for arch in os.getenv("DEEP_SELECT_CUDA_ARCHS", "100a,103a").split(",")
+    if arch.strip()
+]
+
 CUDA_SOURCES = [
     "csrc/api.cpp",
 
@@ -97,6 +103,11 @@ CUDA_SOURCES = [
 
 ]
 
+if "90a" in CUDA_ARCHS:
+    CUDA_SOURCES += sorted(str(path) for path in Path(
+        "csrc/cuda_kernels/v3_cluster/instantiations"
+    ).glob("*_tma_16_cluster_8.cu"))
+
 def build_on_cuda_platform():
     from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 
@@ -113,18 +124,26 @@ def build_on_cuda_platform():
     nvcc_version_number = nvcc_version.split("release ")[1].split(",")[0].strip()
     major, minor = map(int, nvcc_version_number.split("."))
     print(f"Compiling using NVCC {major}.{minor}")
-    if major < 12 or (major == 12 and minor <= 8):
-        raise RuntimeError("sm100 compilation requires NVCC 12.9 or higher.")
+    cuda_archs = CUDA_ARCHS
+    supported_cuda_archs = {"90a", "100a", "103a"}
+    invalid_cuda_archs = set(cuda_archs) - supported_cuda_archs
+    if invalid_cuda_archs:
+        raise ValueError(
+            f"Invalid DEEP_SELECT_CUDA_ARCHS entries: {sorted(invalid_cuda_archs)}. "
+            f"Available values are {sorted(supported_cuda_archs)}"
+        )
+    if not cuda_archs:
+        raise ValueError("DEEP_SELECT_CUDA_ARCHS must contain at least one architecture")
+    if any(arch in {"100a", "103a"} for arch in cuda_archs):
+        if major < 12 or (major == 12 and minor <= 8):
+            raise RuntimeError("sm100/sm103 compilation requires NVCC 12.9 or higher.")
+    elif major < 12:
+        raise RuntimeError("sm90 compilation requires NVCC 12.0 or higher.")
 
-    cc_flag = [
-        # Currently skip build for sm80 and sm90 to speed up compilation
-        # "-gencode", "arch=compute_80,code=sm_80",
-        # "-gencode", "arch=compute_90a,code=sm_90a",
-
-        # Compile sm100 and sm103 separately to give the compiler more room for optimization
-        "-gencode", "arch=compute_100a,code=sm_100a",
-        "-gencode", "arch=compute_103a,code=sm_103a",
-    ]
+    cc_flag = []
+    for arch in cuda_archs:
+        cc_flag += ["-gencode", f"arch=compute_{arch},code=sm_{arch}"]
+    print(f"CUDA architectures: {', '.join(cuda_archs)}")
 
     this_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -182,7 +201,6 @@ def build_on_cuda_platform():
     return (ext_modules, SpillCheckBuildExtension)
 
 
-build_target_platform = kk.get_current_platform()
 overrided_platform = os.environ.get('DEEP_SELECT_BUILD_TARGET_PLATFORM', None)
 if overrided_platform is not None:
     overrided_platform_dict = {
@@ -191,6 +209,8 @@ if overrided_platform is not None:
     if overrided_platform not in overrided_platform_dict:
         raise ValueError(f"Invalid `DEEP_SELECT_BUILD_TARGET_PLATFORM`: {overrided_platform}. Available values are {list(overrided_platform_dict.keys())}")
     build_target_platform = overrided_platform_dict[overrided_platform]
+else:
+    build_target_platform = kk.get_current_platform()
 print(f"Build target: {build_target_platform}")
 
 try:

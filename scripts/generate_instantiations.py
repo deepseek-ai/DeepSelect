@@ -145,12 +145,13 @@ def main(instantiation_dir: str):
         generate_instantiations(instantiation_dir, "topk_select_fp32", configs)
     elif instantiation_dir == "csrc/cuda_kernels/v3_cluster/instantiations":
         remove_and_remake_dir()
-        # The cluster tier is bf16 + mk1024 only and always uses a 16-CTA cluster.
+        # SM90 supports the portable 8-CTA cluster; keep the SM100 16-CTA files.
         configs = []
         for out_idx_t in ["int32_t", "int64_t"]:
             for si in [False, True]:
                 for rv in [False, True]:
                     configs.append(TopkSelectConfigs("nv_bfloat16", out_idx_t, False, si, rv, 1024, 256, 1, 4096, 4096, 16, 16))
+                    configs.append(TopkSelectConfigs("nv_bfloat16", out_idx_t, False, si, rv, 1024, 256, 1, 4096, 4096, 16, 8))
         generate_instantiations(instantiation_dir, "topk_select_bf16_cluster", configs)
     else:
         raise ValueError(f"Invalid `instantiation_dir: {instantiation_dir}")

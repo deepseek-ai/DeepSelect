@@ -54,7 +54,7 @@ public:
 
     static_assert(Config::target_occupancy == 1);
     static_assert(MAX_TOPK == 512 || MAX_TOPK == 1024);
-    static_assert(Config::cluster_size == 16);
+    static_assert(Config::cluster_size == 8 || Config::cluster_size == 16);
     static_assert(NUM_ELEMS_PER_ROUND * sizeof(ValueT) % 1024 == 0);
     static_assert((uint64_t)(MAX_VOCAB_SIZE / NUM_ELEMS_PER_SEG) * (MAX_VOCAB_SIZE / NUM_ELEMS_PER_SEG)
                   + BF16Base::PERM_ADD_BASE <= 0xFFFFFFFFull);
