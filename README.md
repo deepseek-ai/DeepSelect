@@ -9,7 +9,7 @@ DeepSelect is a high performance implementation of the TopK kernel used in DeepS
 
 ## Supported Cases
 
-TopK workloads vary widely, and the fastest algorithm & implementation highly depends on the input dtype, `batch_size`, `vocab_size`, and `topk`. This repository only focuses on the following cases:
+TopK workloads vary widely, and the fastest algorithm & implementation highly depend on the input dtype, `batch_size`, `vocab_size`, and `topk`. This repository only focuses on the following cases:
 
 ### Lightning Indexer Scenario
 
