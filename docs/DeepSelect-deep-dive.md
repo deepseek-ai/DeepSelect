@@ -44,7 +44,7 @@ To avoid performance degradation on unfavorable inputs, blocks are processed in 
 
 Notes:
 
-- At any time, `len(topk_candidate) <= k + B2 + B` holds
+- At any time, `len(topk_candidate) <= k + B2 + B` holds.
 - Every element of $`x`$ is read exactly once, with accesses performed in contiguous blocks of size $`B`$.
 - Excluding the random block permutation, the algorithm requires only $`O(k+B+B_2)`$ additional space, which can reside in a smaller and faster memory space such as shared memory.
 
