@@ -12,6 +12,7 @@
 #include "cuda_kernels/v3/topk_select.h"
 #include "cuda_kernels/v3_fp32/topk_select.h"
 #include <cstdlib>
+#include <string>
 #include "cuda_kernels/v3_cluster/topk_select.h"
 
 void topk(
@@ -76,10 +77,12 @@ void topk(
         int64_t cur_stride = tensor.stride(0);
         uint64_t itemsize = tensor.dtype().itemsize();
         TORCH_CHECK(cur_stride * itemsize % alignment_requirement_bytes == 0,
-            std::format("{}.stride(0) (currently {} numbers) must be a multiple of {} Bytes ({} numbers)",
-                tensor_name, cur_stride,
-                alignment_requirement_bytes, alignment_requirement_bytes / itemsize
-            )
+            std::string(tensor_name) + ".stride(0) (currently " +
+                std::to_string(cur_stride) +
+                " numbers) must be a multiple of " +
+                std::to_string(alignment_requirement_bytes) + " Bytes (" +
+                std::to_string(alignment_requirement_bytes / itemsize) +
+                " numbers)"
         );
     };
     check_dim0_stride("input", input, INPUT_STRIDE_ALIGNMENT_REQUIREMENT);
