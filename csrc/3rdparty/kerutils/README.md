@@ -5,9 +5,6 @@ Kerutils is a library that provides:
 - Wrappers for low-level PTX instructions
 - Helpers for checking tensor device / shape / stride / dtype, useful in kernel library's dispatcher
 
-> This copy is a subset of upstream Kerutils: the CuTe UTCMMA / 2SM TMA copy wrappers,
-> the GeMM helpers and the Kernel Insight (KI) library have been removed because
-> DeepSelect does not use them.
 
 ## Getting Started
 

@@ -13,6 +13,10 @@
 #include <cudaTypedefs.h>
 #endif
 
+#ifdef KERUTILS_IS_BUILD_ON_ASCEND
+#include <acl/acl.h>
+#endif
+
 #include "kerutils/common/common.h"
 
 namespace kerutils {
@@ -79,16 +83,6 @@ do {                                                                            
 } while(0)
 
 #define KU_CHECK_KERNEL_LAUNCH() KU_CUDA_CHECK(cudaGetLastError())
-
-template<typename T>
-inline __host__ __device__ constexpr T ceil_div(const T &a, const T &b) {
-    return (a + b - 1) / b;
-}
-
-template<typename T>
-inline __host__ __device__ constexpr T ceil(const T &a, const T &b) {
-    return (a + b - 1) / b * b;
-}
 
 template<typename T, T LOWER_BOUND = 1>
 inline __host__ __device__ constexpr T find_next_power_of_2(const T& x) {
@@ -278,5 +272,22 @@ void launch_kernel(const KernelLaunchConfig &cfg, KernelFunc kernel, Args&&... a
 }
 
 #endif  // KERUTILS_IS_BUILD_ON_CUDA
+
+#ifdef KERUTILS_IS_BUILD_ON_ASCEND
+
+#define KU_ACLRT_CHECK(call)                                                                                   \
+do {                                                                                                            \
+    aclError status_ = (call);                                                                                  \
+    if (status_ != ACL_SUCCESS) {                                                                               \
+        char _ku_buf[1024];                                                                                     \
+        snprintf(_ku_buf, sizeof(_ku_buf), "ACLRT error (%s:%d): %s (code %d)", __FILE__, __LINE__,            \
+                 aclGetRecentErrMsg(), status_);                                                                \
+        fprintf(stderr, "%s\n", _ku_buf);                                                                       \
+        THROW_KU_EXCEPTION("ACLRT", _ku_buf);                                                                   \
+    }                                                                                                            \
+} while(0)
+
+
+#endif  // KERUTILS_IS_BUILD_ON_ASCEND
 
 }   // namespace kerutils

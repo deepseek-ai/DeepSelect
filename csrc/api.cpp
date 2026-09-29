@@ -1,18 +1,37 @@
-// This file contains only the host-side topk() function and pybind11 module.
-// Kernel template instantiations are in separate files for parallel compilation.
+#include <cstdlib>
+#include <limits>
+
 #include <torch/extension.h>
+
+#include "dispatch_utils.h"
+#include "structs.h"
+
+#ifdef DEEP_SELECT_IS_BUILD_ON_CUDA
+
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAEvent.h>
 
 #include "kerutils/supplemental/torch_tensors.h"
 
-#include "dispatch_utils.h"
-
 #include "cuda_kernels/config.h"
 #include "cuda_kernels/v3/topk_select.h"
 #include "cuda_kernels/v3_fp32/topk_select.h"
-#include <cstdlib>
 #include "cuda_kernels/v3_cluster/topk_select.h"
+
+#elif defined(DEEP_SELECT_IS_BUILD_ON_ASCEND)
+
+#include <ATen/ScalarType.h>
+#include <c10/util/BFloat16.h>
+
+#include <torch_npu/csrc/core/npu/NPUStream.h>
+
+#include "kerutils/supplemental/torch_tensors.h"
+
+#include "ascend_kernels/kernel.h"
+
+#else
+#error "Exactly one of DEEP_SELECT_IS_BUILD_ON_CUDA / DEEP_SELECT_IS_BUILD_ON_ASCEND must be defined (see setup.py)"
+#endif
 
 void topk(
     torch::Tensor &input,
@@ -29,42 +48,45 @@ void topk(
     bool return_value,
     bool abort_when_nan_found
 ) {
-    int batch_size = input.size(0);
-    int vocab_size = input.size(1);
+    int64_t batch_size = input.size(0);
+    int64_t vocab_size = input.size(1);
     at::ScalarType value_t = input.scalar_type();
     at::ScalarType output_index_t = output_index.scalar_type();
 
     TORCH_CHECK(topk > 0, "topk must > 0");
+    TORCH_CHECK(topk <= 4096, "topk must be <= 4096");
+    TORCH_CHECK((uint64_t)batch_size <= std::numeric_limits<uint32_t>::max(),
+                "batch size exceeds uint32 capacity");
     TORCH_CHECK(!(sorted_value && !return_value), "`return_value` must be enabled when `sorted_value` is True");
     TORCH_CHECK(!(sorted_value && sorted_index), "`sorted_value` and `sorted_index` cannot be used at the same time");
-    // Contract: sorted_value is a 32-bit-value-only feature.
-    TORCH_CHECK(!(sorted_value && value_t == at::kBFloat16), "`sorted_value` is only supported for float32 input");
     TORCH_CHECK(!begin.has_value(), "`begin` is not supported currently");
     if (return_value) {
         TORCH_CHECK(output_value.has_value(), "`output_value` must not be `None` when `return_value` is True");
+    } else {
+        TORCH_CHECK(!output_value.has_value(), "`output_value` must be `None` when `return_value` is False");
     }
-    
+
     KU_CHECK_DEVICE(input);
     KU_CHECK_DEVICE(begin);
     KU_CHECK_DEVICE(end);
     KU_CHECK_DEVICE(output_value);
     KU_CHECK_DEVICE(output_index);
     KU_CHECK_DEVICE(output_idx_offset);
-    
+
     KU_CHECK_SHAPE(input, batch_size, vocab_size);
     KU_CHECK_SHAPE(begin, batch_size);
     KU_CHECK_SHAPE(end, batch_size);
     KU_CHECK_SHAPE(output_value, batch_size, topk);
     KU_CHECK_SHAPE(output_index, batch_size, topk);
     KU_CHECK_SHAPE(output_idx_offset, batch_size);
-    
+
     KU_CHECK_DTYPE(input, value_t);
     KU_CHECK_DTYPE(begin, at::kInt);
     KU_CHECK_DTYPE(end, at::kInt);
     KU_CHECK_DTYPE(output_value, value_t);
     KU_CHECK_DTYPE(output_index, output_index_t);
     KU_CHECK_DTYPE(output_idx_offset, at::kInt);
-    
+
     KU_CHECK_LAST_DIM_CONTIGUOUS(input);
     KU_CHECK_CONTIGUOUS(begin);
     KU_CHECK_CONTIGUOUS(end);
@@ -88,8 +110,6 @@ void topk(
         check_dim0_stride("value", *output_value, OUTPUT_STRIDE_ALIGNMENT_REQUIREMENT);
     }
 
-    cudaDeviceProp* device_prop = at::cuda::getDeviceProperties(at::cuda::current_device());
-    TORCH_CHECK(device_prop != nullptr);
     TopkSelectArgs args = {
         (uint32_t)batch_size,
         (uint32_t)vocab_size,
@@ -106,25 +126,33 @@ void topk(
         output_value.has_value() ? (uint64_t)output_value->stride(0) : 0,
         (uint64_t)output_index.stride(0),
 
-        sorted_value,
-        sorted_index,
-        return_value,
-        idx_oob_fill_value,
-        value_oob_fill_value,
-        abort_when_nan_found,
-
-        device_prop->sharedMemPerBlockOptin,
-        at::cuda::getCurrentCUDAStream().stream()
+        sorted_value, sorted_index, return_value,
+        idx_oob_fill_value, value_oob_fill_value, abort_when_nan_found
     };
 
-    uint32_t num_sm = device_prop->multiProcessorCount;
-    uint32_t num_waves = (batch_size + num_sm-1) / num_sm;
+#ifdef DEEP_SELECT_IS_BUILD_ON_CUDA
+    cudaDeviceProp *device_prop = at::cuda::getDeviceProperties(at::cuda::current_device());
+    TORCH_CHECK(device_prop != nullptr);
+    args.shared_memory_size_per_sm = device_prop->sharedMemPerBlockOptin;
+    args.stream = at::cuda::getCurrentCUDAStream().stream();
+#else
+    // Ascend writes 16-bit bf16 lanes directly, so it takes the pre-rounded bit pattern.
+    args.value_oob_fill_bits = c10::BFloat16(static_cast<float>(value_oob_fill_value)).x;
+    args.stream = c10_npu::getCurrentNPUStream();
+#endif
 
+    // Backend dispatch
+#ifdef DEEP_SELECT_IS_BUILD_ON_CUDA
     TORCH_CHECK(value_t == at::kBFloat16 || value_t == at::kFloat, "input dtype must be bfloat16 or float32");
+    // Contract: sorted_value is a 32-bit-value-only feature.
+    TORCH_CHECK(!(sorted_value && value_t == at::kBFloat16), "`sorted_value` is only supported for float32 input");
+
+    uint32_t num_sm = device_prop->multiProcessorCount;
+    uint32_t num_waves = (uint32_t)(batch_size + num_sm - 1) / num_sm;
+
     if (value_t == at::kBFloat16) {
         TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
                     "vocab_size must be < 2^23 for bfloat16 input");
-        TORCH_CHECK(topk <= 4096, "topk must be <= 4096");
         if (batch_size <= 6 && (uint32_t)vocab_size >= 512u * 1024u && topk <= 1024) {  // TODO Tune
             INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
                 BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
@@ -164,7 +192,6 @@ void topk(
     } else {
         TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
                     "vocab_size must be < 2^23 for float32 input");
-        TORCH_CHECK(topk <= 4096, "topk must be <= 4096");
 
         INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
             //   topk <= 1024        -> 512t / B8192 / B2 4096 / TMA3
@@ -192,12 +219,38 @@ void topk(
             }
         });
     }
+#else
+    TORCH_CHECK(value_t == at::kBFloat16, "input dtype must be bfloat16 on Ascend");
+    TORCH_CHECK(output_index_t == at::kInt, "output_idx dtype must be torch.int32 on Ascend");
+    TORCH_CHECK(!sorted_value, "sorting by value is not supported on Ascend");
+    TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
+                "vocab_size must be < 2M for bfloat16 input");
+
+    BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
+        using topk_select_ascend::Config;
+        using topk_select_ascend::run_topk_select_kernel;
+        const auto launch = [&]<bool kAbortWhenNanFound>() {
+            if (topk <= 512) {
+                run_topk_select_kernel<Config{512, kAbortWhenNanFound, SORTED_INDEX}>(args);
+            } else if (topk <= 1024) {
+                run_topk_select_kernel<Config{1024, kAbortWhenNanFound, SORTED_INDEX}>(args);
+            } else {
+                run_topk_select_kernel<Config{4096, kAbortWhenNanFound, SORTED_INDEX}>(args);
+            }
+        };
+        if (abort_when_nan_found) {
+            launch.template operator()<true>();
+        } else {
+            launch.template operator()<false>();
+        }
+    });
+#endif
 }
 
 std::pair<uint32_t, uint32_t> get_alignment_requirement() {
     return {INPUT_STRIDE_ALIGNMENT_REQUIREMENT, OUTPUT_STRIDE_ALIGNMENT_REQUIREMENT};
-
 }
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("topk", &topk);
     m.def("get_alignment_requirement", &get_alignment_requirement);

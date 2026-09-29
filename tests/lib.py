@@ -207,6 +207,20 @@ class TestParam:
     check_correctness: bool = True
     num_runs: int = 10
 
+    def can_run_on_and_clamp(self) -> bool:
+        if kk.is_on_cuda_platform():
+            return True
+        elif kk.is_on_ascend_platform():
+            if self.dtype != torch.bfloat16:
+                return False
+            if self.out_idx_dtype != torch.int32:
+                return False
+            if self.sorted_value:
+                return False
+            return True
+        else:
+            raise RuntimeError("Unknown platform")
+
 @dataclasses.dataclass
 class Testcase:
     input: torch.Tensor
@@ -236,5 +250,36 @@ def row_wise_masked_fill_(tensor: torch.Tensor, bound: Optional[torch.Tensor], v
     """
     if bound is None:
         return
-    mask = torch.arange(0, tensor.shape[1]).unsqueeze(0).broadcast_to(tensor.shape) >= bound.unsqueeze(-1).broadcast_to(tensor.shape)
-    tensor[mask] = value
+    mask = torch.arange(
+        tensor.shape[1], device=tensor.device, dtype=bound.dtype
+    ).unsqueeze(0) >= bound.unsqueeze(1)
+    tensor.masked_fill_(mask, value)
+
+def safe_gather(tensor: torch.Tensor, dim: int, index: torch.Tensor) -> torch.Tensor:
+    """
+    `torch.gather(tensor, dim, index)`, working around the torch_npu defect above.
+
+    Only the buggy pattern (NPU + dim=1 on 2-D tensors + >= 2**31 source elements)
+    is row-chunked; everything else is a plain `torch.gather`.
+    """
+    _CHUNK_ROWS = 1024
+    needs_workaround = (
+        tensor.device.type == "npu"
+        and dim == 1
+        and tensor.dim() == 2
+        and index.dim() == 2
+        and tensor.numel() >= 2**31
+    )
+    if not needs_workaround:
+        return torch.gather(tensor, dim, index)
+
+    parts = []
+    for row0 in range(0, tensor.size(0), _CHUNK_ROWS):
+        parts.append(
+            torch.gather(
+                tensor[row0: row0 + _CHUNK_ROWS],
+                dim,
+                index[row0: row0 + _CHUNK_ROWS],
+            )
+        )
+    return torch.cat(parts, dim=0)
