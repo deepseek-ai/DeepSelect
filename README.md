@@ -23,7 +23,7 @@ This scenario covers:
 - `topk`: small (must be $\le 4096$; larger values are not supported), mainly optimized for `topk=512` (i.e., DeepSeek V4's `topk`)
 
 Recommendations:
-- Disable `sorted_index` and `sorted` unless the output has to be ordered by index or by value, respectively; enabling either one costs performance.
+- Disable `sorted_index` unless the output has to be ordered by index; enabling it costs performance.
 - Set `return_value=False` when the values are not needed. This skips the value output and is faster.
 
 ### Sampling Scenario
@@ -85,6 +85,7 @@ x = torch.randn(batch_size, vocab_size, dtype=torch.bfloat16, device="cuda")
 values, indices = deep_select.topk(
     x,
     topk,
+    sorted=False,              # sort the result by values in descending order (only the FP32 variant on the CUDA platform supports this)
     sorted_index=True,         # return each row's indices in ascending order
     indices_type=torch.int32,  # torch.int32 or torch.int64 (The Ascend implementation only supports `torch.int32`)
     return_value=True,         # False skips the value output (~10% faster)
