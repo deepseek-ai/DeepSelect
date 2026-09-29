@@ -154,7 +154,7 @@ def run_testcase(p: TestParam, quiet: bool = False, t: Optional[Testcase] = None
             time_usage = bench_result.get_kernel_time(kernel_names[0])
         else:
             time_usage = bench_result.get_e2e_time(kernel_names)
-        print(f"topk           : {time_usage * 1e6:9.3f} us, {total_size / time_usage / 1e12:.3f} TB/s")
+        print(f"deepselect     : {time_usage * 1e6:9.3f} us, {total_size / time_usage / 1e12:.3f} TB/s")
 
         if t.end is None and t.output_idx_offset is None and p.vocab_size >= p.topk:
             def run_torch_topk():
