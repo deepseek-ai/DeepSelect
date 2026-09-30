@@ -15,19 +15,29 @@ import deep_select
 import lib
 from lib import TestParam, Testcase, UniformUIntDistribution, NormalFloatDistribution, UintDistributionWithHotspotAndSpecifiedPivot, get_fp_config
 
+IS_ASCEND = kk.get_current_platform() == kk.Platform.ASCEND
+
+MAX_VOCAB_SIZE = (2 * 1024 * 1024 - 1) if IS_ASCEND else ((1 << 23) - 1)
+
 def get_space(t: torch.Tensor):
     return t.numel() * t.element_size()
 
 _counter = kk.Counter()
 @torch.inference_mode()
-def run_testcase(p: TestParam):
+def run_testcase(p: TestParam, quiet: bool = False, t: Optional[Testcase] = None):
     if p.seed == -1:
         global _counter
         p.seed = _counter.next()
 
-    print(f"Running on {p}")
+    if kk.is_on_ascend_platform():
+        # To avoid "Resource_Error_Insufficient_Device_Memory(EL0019): halMemAlloc failed. Failed to allocate 8176795648 bytes device memory requested by the APP module."
+        torch.npu.empty_cache()
 
-    t = lib.generate_testcase(p)
+    if not quiet:
+        print(f"Running on {p}")
+
+    if t is None:
+        t = lib.generate_testcase(p)
 
     def run_topk_select(testcase: Testcase = t, start_batch_idx: int = 0, end_batch_idx: Optional[int] = None):
         if end_batch_idx is None:
@@ -99,7 +109,9 @@ def run_testcase(p: TestParam):
         is_correct &= kk.check_is_bitwise_equal("unique index", duplicate_mask, torch.zeros_like(duplicate_mask))
 
         safe_selected_index = torch.where(selected_mask & index_in_range, selected_index, 0)
-        gathered_value = t.input.gather(1, safe_selected_index)
+        # NOTE: use `lib.safe_gather` instead of `t.input.gather(1, ...)` to work
+        # around a torch_npu gather defect (see `lib.safe_gather`).
+        gathered_value = lib.safe_gather(t.input, 1, safe_selected_index)
         valid_row_mask = ~has_nan_mask
         if bool(torch.any(valid_row_mask).item()):
             valid_selected_mask = selected_mask[valid_row_mask]
@@ -142,27 +154,25 @@ def run_testcase(p: TestParam):
             time_usage = bench_result.get_kernel_time(kernel_names[0])
         else:
             time_usage = bench_result.get_e2e_time(kernel_names)
-        print(f"topk           : {time_usage * 1e6:9.3f} us, {total_size / time_usage / 1e12:.3f} TB/s")
+        print(f"deepselect     : {time_usage * 1e6:9.3f} us, {total_size / time_usage / 1e12:.3f} TB/s")
 
         if t.end is None and t.output_idx_offset is None and p.vocab_size >= p.topk:
             def run_torch_topk():
                 return torch.topk(t.input, p.topk, dim=1, sorted=p.sorted_value)
             torch_bench_result = kk.bench(run_torch_topk, p.num_runs)
-            # torch.topk is a multi-kernel op (`mbtopk`), so measure the span over its kernels.
-            torch_kernel_names = [s for s in torch_bench_result.get_kernel_names() if "topk" in s]
+            torch_kernel_names = [s for s in torch_bench_result.get_kernel_names() if "topk" in s.lower()]
             if len(torch_kernel_names) == 1:
                 torch_time = torch_bench_result.get_kernel_time(torch_kernel_names[0])
             elif torch_kernel_names:
                 torch_time = torch_bench_result.get_e2e_time(torch_kernel_names)
             else:
-                torch_time = 0
-            if torch_time > 0:
-                print(f"torch.topk     : {torch_time * 1e6:9.3f} us, {total_size / torch_time / 1e12:.3f} TB/s  (speedup {torch_time / time_usage:.2f}x)")
+                raise RuntimeError("Failed to match the `torch.topk` kernel")
+            print(f"torch.topk     : {torch_time * 1e6:9.3f} us, {total_size / torch_time / 1e12:.3f} TB/s  (speedup {torch_time / time_usage:.2f}x)")
 
     return is_correct
 
 if __name__ == '__main__':
-    torch.set_default_device("cuda")
+    torch.set_default_device("npu" if kk.get_current_platform() == kk.Platform.ASCEND else "cuda")
 
     parser = argparse.ArgumentParser()
     lib.stick_unit_test_args(parser)
@@ -187,12 +197,14 @@ if __name__ == '__main__':
                 if sv and dtype == torch.bfloat16:
                     # sorted_value is fp32-only
                     continue
-                for b in [random.randint(1, 20), random.randint(1, 100), 121, 512, 4096]:
+                for b in [random.randint(1, 20), random.randint(1, 100), 121, 512, (4096 if kk.is_on_cuda_platform() else 1024)]:
                     for vocab_size in [
                         1, random.randint(2, 500), 1602, 32768, 123245, 225467, 262144, 418673, 682965, 998123, 1048576, (1 << 23) - 1
                     ]:
                         if b == 4096 and vocab_size > 1048576:
                             continue    # To avoid OOM
+                        if vocab_size > MAX_VOCAB_SIZE:
+                            continue    # `vocab_size` exceeds what the backend supports (see MAX_VOCAB_SIZE)
                         for topk in [
                             1, random.randint(2, 500), 512, 1024, 1231, 2048, 2132, 2333, 4096
                         ]:
@@ -248,6 +260,9 @@ if __name__ == '__main__':
         testcases = [t for t in testcases if t.dtype == wanted_dtype]
     if args.perf_only:
         testcases = [t for t in testcases if t.num_runs > 0]
+
+    # Drop the testcases the current platform's backend cannot run
+    testcases = [t for t in testcases if t.can_run_on_and_clamp()]
 
     # Use the following testcases to compare the kernel performance under different batch size & sequence lengths
     # testcases = [

@@ -32,7 +32,9 @@ def is_using_profiling_tools() -> bool:
     is_using_ncu = os.environ.get('NV_COMPUTE_PROFILER_PERFWORKS_DIR') is not None
     is_using_compute_sanitizer = os.environ.get('NV_SANITIZER_INJECTION_PORT_RANGE_BEGIN') is not None
 
-    return is_using_nsys or is_using_ncu or is_using_compute_sanitizer
+    is_using_msprof = os.environ.get('MSOPPROF_EXE_PATH') is not None
+    is_using_cannsim = os.environ.get('CAMODEL_LOG_PATH') is not None
+    return is_using_nsys or is_using_ncu or is_using_compute_sanitizer or is_using_msprof or is_using_cannsim
 
 def set_random_seed(seed: int):
     import random
@@ -52,6 +54,17 @@ class Counter:
     def next(self) -> int:
         self.count += 1
         return self.count - 1
+
+@functools.lru_cache(maxsize=1)
+def try_to_import_torch_npu():
+    """
+    Try to import torch_npu
+    """
+    try:
+        import torch_npu
+        return torch_npu
+    except ModuleNotFoundError:
+        return None
 
 @contextlib.contextmanager
 def suppress_stdout_stderr(suppress: bool = True):

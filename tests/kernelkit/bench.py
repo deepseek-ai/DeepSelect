@@ -1,14 +1,17 @@
 from typing import Tuple, List, Callable, Union, Optional, Dict, overload
-from collections import defaultdict
+import csv
 import dataclasses
 import itertools
 import os
+import pathlib
+import shutil
+import tempfile
 
 import torch
 import triton
 
 from .platform import Platform, get_current_platform, requires_platform
-from .utils import is_using_profiling_tools
+from .utils import is_using_profiling_tools, suppress_stdout_stderr
 
 class empty_suppress:
     def __enter__(self):
@@ -106,7 +109,6 @@ class BenchResult:
         result = sum([end-start for (start, end) in time_spans]) / self.num_tests
         return result
 
-
 def _bench_kineto(fn: Callable, num_tests: int = 30,
                  flush_l2: bool = True) -> BenchResult:
     """
@@ -118,6 +120,11 @@ def _bench_kineto(fn: Callable, num_tests: int = 30,
     flush_l2_size = int(8e9 // 4)
     schedule = torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1) if not is_using_nsys else None
     profiler = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA], schedule=schedule, acc_events=True) if not is_using_nsys else empty_suppress()
+
+    is_kineto_log_level_unset = 'KINETO_LOG_LEVEL' not in os.environ
+    if is_kineto_log_level_unset:
+        os.environ['KINETO_LOG_LEVEL'] = '6'  # Suppress those "profiler_start" / "profiler_end" messages
+    
     with profiler:
         for i in range(2):
             if i == 1 and not is_using_nsys:
@@ -135,7 +142,10 @@ def _bench_kineto(fn: Callable, num_tests: int = 30,
                 if i == 0:
                     torch.cuda.synchronize()
                 profiler.step()
-    
+
+    if is_kineto_log_level_unset:
+        os.environ.pop('KINETO_LOG_LEVEL')
+
     if is_using_nsys:
         return BenchResult(num_tests, {})
 
@@ -164,11 +174,82 @@ def _bench_kineto(fn: Callable, num_tests: int = 30,
     return BenchResult(num_tests, kernel_times)
 
 
+def _bench_msprof(fn: Callable, num_tests: int = 30,
+                 flush_l2: bool = True) -> BenchResult:
+    """
+    Run `fn` for `num_tests` times under the Ascend profiler, and returns a BenchResult
+
+    NOTE The Ascend profiler has no in-process event list like kineto's `profiler.events()`.
+    Instead it dumps raw profiling data and analyses it into
+    `ASCEND_PROFILER_OUTPUT/kernel_details.csv`, which holds exactly one row per kernel
+    launch (`Name` / `Start Time(us)` / `Duration(us)`). Note that the analysis shells out to
+    `msprof`, so each call costs a few seconds regardless of `num_tests`.
+    """
+    import torch_npu.profiler   # pylint: disable=import-outside-toplevel
+    is_using_msprof = is_using_profiling_tools()
+
+    flush_l2_size = int(8e9 // 4)
+
+    def run_once():
+        if flush_l2:
+            torch.empty(flush_l2_size, dtype=torch.int, device='npu').zero_()
+        fn()
+
+    # Warm up outside the profiled range: the Ascend profiler records everything between
+    # `start()` and `stop()`, it has none of kineto's `schedule`-based warmup
+    for _ in range(num_tests):
+        run_once()
+    torch.npu.synchronize()
+
+    prof_dir = tempfile.mkdtemp(prefix='kernelkit_bench_msprof_')
+    try:
+        # Pairing `schedule(active=1)` with a single `step()` records exactly `num_tests` iterations.
+        # `on_trace_ready` runs `msprof --analyze` when the profiler stops, which is what actually
+        # writes `kernel_details.csv`. Everything is wrapped in `suppress_stdout_stderr` because a
+        # zero-warmup schedule and the `msprof` progress bar both print noisy messages.
+        with suppress_stdout_stderr(True):
+            profiler = torch_npu.profiler.profile(
+                activities=[torch_npu.profiler.ProfilerActivity.NPU],
+                schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=1, repeat=1, skip_first=0),
+                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(prof_dir),
+                experimental_config=torch_npu.profiler._ExperimentalConfig(
+                    profiler_level=torch_npu.profiler.ProfilerLevel.Level0,
+                    aic_metrics=torch_npu.profiler.AiCMetrics.AiCoreNone,
+                ),
+            ) if not is_using_msprof else empty_suppress()
+
+            with profiler as prof:
+                for _ in range(num_tests):
+                    run_once()
+                torch.npu.synchronize()
+                if not is_using_msprof:
+                    prof.step()
+
+        if is_using_msprof:
+            return BenchResult(num_tests, {})
+
+        kernel_details_csv = next(pathlib.Path(prof.prof_if.prof_path).rglob('kernel_details.csv'), None)
+        if kernel_details_csv is None:
+            raise RuntimeError(f"Could not find kernel_details.csv under {prof.prof_if.prof_path}")
+
+        result = BenchResult(num_tests, {})
+        with open(kernel_details_csv, newline='') as f:
+            for row in csv.DictReader(f):
+                start = float(row['Start Time(us)']) * 1e-6
+                end = start + float(row['Duration(us)']) * 1e-6
+                result.time_ranges.setdefault(row['Name'].strip(), []).append((start, end))
+        return result
+    finally:
+        shutil.rmtree(prof_dir, ignore_errors=True)
+
+
 def bench(fn: Callable, num_tests: int = 30,
           flush_l2: bool = True) -> BenchResult:
     current_platform = get_current_platform()
     if current_platform == Platform.CUDA:
         return _bench_kineto(fn, num_tests, flush_l2)
+    elif current_platform == Platform.ASCEND:
+        return _bench_msprof(fn, num_tests, flush_l2)
     else:
         raise RuntimeError(f"Unknown platform: {current_platform}")
 

@@ -52,9 +52,13 @@ static inline PtrT* get_optional_tensor_ptr(const T& tensor_or_opt) {
 
 }
 
-// Check whether the given tensor (or optional<tensor>) is on CUDA GPU
+// Check whether the given tensor (or optional<tensor>) is on CUDA GPU or NPU
 #ifdef KERUTILS_IS_BUILD_ON_CUDA
 #define KU_CHECK_DEVICE(tensor) TORCH_CHECK(ku::_check_optional_tensor(tensor, [](const at::Tensor& t) { return t.is_cuda(); }), #tensor " must be on CUDA")
+#endif
+
+#ifdef KERUTILS_IS_BUILD_ON_ASCEND
+#define KU_CHECK_DEVICE(tensor) TORCH_CHECK(ku::_check_optional_tensor(tensor, [](const at::Tensor& t) { return t.device().type() == c10::DeviceType::PrivateUse1; }), #tensor " must be on NPU")
 #endif
 
 // Check whether the given tensor (or optional<tensor>) has the given number of dimensions

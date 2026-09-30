@@ -1,9 +1,12 @@
 # DeepSelect
 
-DeepSelect is a high performance implementation of the TopK kernel used in DeepSeek Sparse Attention (DSA) (which is used in DeepSeek V3.2, DeepSeek V4, and DeepSeek V4.1 models) and the sampler. It achieves 2 ~ 20x speedup compared to vanilla `torch.topk`.
+DeepSelect is a high performance implementation of the TopK kernel used in DeepSeek Sparse Attention (DSA) (which is used in DeepSeek V3.2, DeepSeek V4, and DeepSeek V4.1 models) and the sampler. It supports NVIDIA CUDA and Huawei Ascend platforms, and achieves 2 ~ 20x speedup compared to vanilla `torch.topk`.
+
+DeepSelect 是为 DeepSeek 稀疏注意力（DeepSeek Sparse Attention, DSA）和采样器（Sampler）定制的高性能 TopK 算子，支持 NVIDIA CUDA 平台与华为昇腾（Ascend）平台。与原生 `torch.topk` 相比，它可实现 2～20 倍的加速。
 
 ## News
 
+- 2026.09.30: We've released TopK kernels for Huawei Ascend NPU
 - 2026.09.10: We've released a brief analysis of the algorithm and its implementation: [English](docs/DeepSelect-deep-dive.md) | [中文](docs/DeepSelect-deep-dive.zh.md)
 - 2026.09.10: We've released DeepSelect v1.0.0
 
@@ -17,10 +20,10 @@ This scenario covers:
 - Input dtype: `torch.bfloat16`
 - `batch_size`: $1 \sim +\infty$ (both large and small batch sizes are optimized)
 - `vocab_size`: $1 \sim +\infty$ (both large and small vocabularies are optimized)
-- `topk`: small (must be $\le 4096$; larger values are not supported)
+- `topk`: small (must be $\le 4096$; larger values are not supported), mainly optimized for `topk=512` (i.e., DeepSeek V4's `topk`)
 
 Recommendations:
-- Disable `sorted_index` unless the output has to be ordered by index or by value; enabling either one costs performance.
+- Disable `sorted_index` unless the output has to be ordered by index; enabling it costs performance.
 - Set `return_value=False` when the values are not needed. This skips the value output and is faster.
 
 ### Sampling Scenario
@@ -31,6 +34,8 @@ This scenario covers:
 - `vocab_size`: around 128K
 - `topk`: small (must be $\le 4096$; larger values are not supported)
 
+Currently, only the CUDA implementation supports `torch.float32` as the input dtype. The Ascend implementation supports `torch.bfloat16` only.
+
 ## Performance
 
 Measured with the benchmark in [`tests/test.py`](tests/test.py)
@@ -38,17 +43,23 @@ Measured with the benchmark in [`tests/test.py`](tests/test.py)
 on the same input. The metric is effective memory bandwidth: TopK does no
 floating-point math, so a FLOP rate would not be meaningful here.
 
-### Lightning Indexer Scenario
+### Lightning Indexer Scenario (CUDA)
 
-bfloat16, `topk = 512`, one subplot per batch size, on a shared 0 - 7 TB/s axis.
+bfloat16, `topk = 512`, one subplot per batch size.
 
-![DeepSelect vs torch.topk, bfloat16 Lightning Indexer](assets/perf_bf16.png)
+![DeepSelect vs torch.topk, bfloat16 Lightning Indexer, CUDA](assets/perf_bf16_cuda.png)
 
-### Sampling Scenario
+### Lightning Indexer Scenario (Ascend)
+
+bfloat16, `topk = 512`, one subplot per batch size.
+
+![DeepSelect vs torch.topk, bfloat16 Lightning Indexer, Ascend](assets/perf_bf16_ascend.png)
+
+### Sampling Scenario (CUDA)
 
 float32, `vocab_size = 129280`, `topk = 512`.
 
-![DeepSelect vs torch.topk, float32 Sampling](assets/perf_fp32.png)
+![DeepSelect vs torch.topk, float32 Sampling, CUDA](assets/perf_fp32_cuda.png)
 
 ## Installation
 
@@ -74,8 +85,9 @@ x = torch.randn(batch_size, vocab_size, dtype=torch.bfloat16, device="cuda")
 values, indices = deep_select.topk(
     x,
     topk,
+    sorted=False,              # sort the result by values in descending order (only the FP32 variant on the CUDA platform supports this)
     sorted_index=True,         # return each row's indices in ascending order
-    indices_type=torch.int32,  # torch.int32 or torch.int64
+    indices_type=torch.int32,  # torch.int32 or torch.int64 (The Ascend implementation only supports `torch.int32`)
     return_value=True,         # False skips the value output (~10% faster)
 )
 # values:  (batch_size, topk) of x.dtype
@@ -104,7 +116,7 @@ values, indices = deep_select.topk(x, 1000, end=end, sorted=True,
 
 ### NaN handling
 
-NaN checking is always on. With the default `abort_when_nan_found=True` the kernel invokes `trap()` and aborts. Rows whose length is `<= topk` are never NaN-checked.
+NaN checking is always on. With the default `abort_when_nan_found=True` the kernel invokes `trap()` and aborts. For the CUDA implementation, rows whose length is `<= topk` are never NaN-checked.
 
 ## Citation
 

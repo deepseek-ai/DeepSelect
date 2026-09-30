@@ -132,10 +132,11 @@ def build_on_cuda_platform():
         name="deep_select.deep_select_cuda",
         sources=CUDA_SOURCES,
         extra_compile_args={
-            "cxx": ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA"],
+            "cxx": ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA", "-DDEEP_SELECT_IS_BUILD_ON_CUDA"],
             "nvcc": append_nvcc_threads([
                 "-O3",
                 "-std=c++20",
+                "-DDEEP_SELECT_IS_BUILD_ON_CUDA",
                 "-Wno-deprecated-declarations",
                 "-U__CUDA_NO_HALF_OPERATORS__",
                 "-U__CUDA_NO_HALF_CONVERSIONS__",
@@ -182,11 +183,81 @@ def build_on_cuda_platform():
     return (ext_modules, SpillCheckBuildExtension)
 
 
+def build_on_ascend_platform():
+    import torch
+    import torch_npu
+    from torch.utils.cpp_extension import BuildExtension, CppExtension
+
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+
+    arch = os.environ.get("ASCEND_NPU_ARCH", "dav-3510")
+    asc_home = os.environ.get(
+        "ASCEND_HOME_PATH", "/usr/local/Ascend/ascend-toolkit/latest"
+    )
+    if not os.path.isdir(asc_home):
+        raise RuntimeError(
+            f"Ascend toolkit not found at '{asc_home}'. "
+            "Please set ASCEND_HOME_PATH to the root of your CANN installation "
+            "(e.g. /usr/local/Ascend/cann-9.2.0)."
+        )
+
+    class AscendBuildExtension(BuildExtension):
+        def build_extensions(self):
+            self.compiler.src_extensions += [".asc"]
+            os.environ["CXX"] = "bisheng"
+            os.environ["CC"] = "bisheng"
+            super().build_extensions()
+
+    torch_npu_root = Path(torch_npu.__file__).resolve().parent
+    ext_modules = [
+        CppExtension(
+            name="deep_select.deep_select_npu",
+            sources=[
+                "csrc/api.cpp",
+                "csrc/ascend_kernels/kernel.asc",
+            ],
+            include_dirs=[
+                Path(this_dir) / "csrc",
+                Path(this_dir) / "csrc/ascend_kernels",
+                Path(this_dir) / "csrc" / "3rdparty" / "kerutils" / "include",
+                Path(asc_home) / "include",
+            ],
+            libraries=["ascendcl", "torch_npu"],
+            library_dirs=[str(Path(asc_home) / "lib64"), str(torch_npu_root / "lib")],
+            extra_compile_args={
+                "cxx": [
+                    "-O2",
+                    "-std=c++20",
+                    f"--npu-arch={arch}",
+                    "-DDEEP_SELECT_IS_BUILD_ON_ASCEND",
+                    "-Wno-deprecated-declarations",
+                    f"-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}",
+                    # `kernel_operator.h` lives here; kerutils' common.h detects it to flip
+                    # KERUTILS_IS_BUILD_ON_ASCEND on.
+                    "-isystem", str(Path(asc_home) / "aarch64-linux" / "asc" / "include"),
+                    "-isystem", str(torch_npu_root / "include"),
+                    "-isystem", str(torch_npu_root / "include/third_party/acl/inc"),
+                    # Disable argument preload at the beginning of kernels to avoid a hardware bug
+                    "-mllvm", "-cce-aicore-dcpreload-args=false",
+                ],
+            },
+            extra_link_args=[
+                "-Wl,-Bsymbolic-functions",
+                # Otherwise the linker complains about "undefined symbol: ReportAscendProf" in CANN 9.2.0
+                str(Path(asc_home) / "aarch64-linux" / "lib64" / "libascendc_runtime.a"),
+            ],
+        )
+    ]
+
+    return (ext_modules, AscendBuildExtension)
+
+
 build_target_platform = kk.get_current_platform()
 overrided_platform = os.environ.get('DEEP_SELECT_BUILD_TARGET_PLATFORM', None)
 if overrided_platform is not None:
     overrided_platform_dict = {
-        'CUDA': kk.Platform.CUDA
+        'CUDA': kk.Platform.CUDA,
+        'ASCEND': kk.Platform.ASCEND,
     }
     if overrided_platform not in overrided_platform_dict:
         raise ValueError(f"Invalid `DEEP_SELECT_BUILD_TARGET_PLATFORM`: {overrided_platform}. Available values are {list(overrided_platform_dict.keys())}")
@@ -205,6 +276,8 @@ datetime_rev = datetime.now().strftime("%Y%m%d.%H%M%S")
 
 if build_target_platform == kk.Platform.CUDA:
     ext_modules, build_ext = build_on_cuda_platform()
+elif build_target_platform == kk.Platform.ASCEND:
+    ext_modules, build_ext = build_on_ascend_platform()
 else:
     raise RuntimeError(f"Unsupported platform: {build_target_platform}.\n(You may use `DEEP_SELECT_BUILD_TARGET_PLATFORM` to explicitly set the target platform for building)")
 
