@@ -50,7 +50,7 @@ def topk(
     """
     Arguments:
         input: (b, vocab_size), dtype=torch.bfloat16/torch.float. Ascend only supports torch.bfloat16. stride(0) must be a multiple of `deep_select.get_stride_requirement()[0]` bytes, and stride(1) must be 1.
-        topk: int. Select topk elements for each row.
+        topk: int in [1, 4096]. Select topk elements for each row.
         sorted: bool. Whether to return sorted **output_val**. Only supports fp32. Ascend only supports False.
         begin(optional): (b,), dtype=int32. CURRENTLY NOT SUPPORTED. The left(inclusive) range for input row, default is 0.
         end(optional): (b,), dtype=int32. The right(exclusive) range for input row, default is vocab_size. The stride of this tensor must be 1.
@@ -72,6 +72,9 @@ def topk(
         output_idx: (b, topk), dtype=indices_type.
                     The output tensors may not be contiguous, when topk * sizeof(input.dtype or indices_dtype) is not a multiple of 32 Bytes
     """
+
+    if not 0 < topk <= 4096:
+        raise ValueError("topk must be between 1 and 4096")
 
     N = input.shape[0]
 
