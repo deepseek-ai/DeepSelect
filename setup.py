@@ -113,18 +113,22 @@ def build_on_cuda_platform():
     nvcc_version_number = nvcc_version.split("release ")[1].split(",")[0].strip()
     major, minor = map(int, nvcc_version_number.split("."))
     print(f"Compiling using NVCC {major}.{minor}")
-    if major < 12 or (major == 12 and minor <= 8):
-        raise RuntimeError("sm100 compilation requires NVCC 12.9 or higher.")
-
     cc_flag = [
-        # Currently skip build for sm80 and sm90 to speed up compilation
-        # "-gencode", "arch=compute_80,code=sm_80",
-        # "-gencode", "arch=compute_90a,code=sm_90a",
-
-        # Compile sm100 and sm103 separately to give the compiler more room for optimization
-        "-gencode", "arch=compute_100a,code=sm_100a",
-        "-gencode", "arch=compute_103a,code=sm_103a",
+        # Hopper (H800/H100) support: kernels have explicit sm90 fallback paths
+        "-gencode", "arch=compute_90a,code=sm_90a",
     ]
+    if major > 12 or (major == 12 and minor >= 9):
+        # sm100/sm103 need CUTLASS headers (cute/atom/copy_traits_sm100.hpp);
+        # enable with DEEP_SELECT_BUILD_SM100=1 on Blackwell hosts.
+        if os.getenv("DEEP_SELECT_BUILD_SM100", "0") == "1":
+            cc_flag += [
+                "-gencode", "arch=compute_100a,code=sm_100a",
+                "-gencode", "arch=compute_103a,code=sm_103a",
+            ]
+        else:
+            print("DEEP_SELECT_BUILD_SM100=0: building Hopper (sm_90a) only")
+    else:
+        print("NVCC < 12.9: skipping sm100/sm103 gencode (Hopper-only build)")
 
     this_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -137,6 +141,9 @@ def build_on_cuda_platform():
                 "-O3",
                 "-std=c++20",
                 "-DDEEP_SELECT_IS_BUILD_ON_CUDA",
+                # pip-shipped nvcc (e.g. 13.4) is stricter than the bundled CTK
+                # headers (CUDART 13.0) in cccl's compat assert; relax it here.
+                "-DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK",
                 "-Wno-deprecated-declarations",
                 "-U__CUDA_NO_HALF_OPERATORS__",
                 "-U__CUDA_NO_HALF_CONVERSIONS__",
@@ -155,6 +162,7 @@ def build_on_cuda_platform():
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "3rdparty" / "cutlass" / "include",
             Path(this_dir) / "csrc" / "3rdparty" / "kerutils" / "include",
+            *[p for p in (os.getenv("DEEP_SELECT_CCCL_INCLUDE"),) if p],
             Path(CUDA_HOME) / "targets" / "x86_64-linux" / "include" / "cccl",
             Path(CUDA_HOME) / "targets" / "sbsa-linux" / "include" / "cccl",
         ],
