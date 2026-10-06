@@ -23,12 +23,23 @@ Algorithm:
 namespace topk_select_bf16_cluster {
 
 CUTE_DEVICE
-static void st_async_32b(uint32_t dst_addr, const uint32_t& data, transac_bar_t &mbar) {
-    uint32_t mbar_addr = cute::cast_smem_ptr_to_uint(&mbar);
+static void st_async_32b(uint32_t dst_addr, const uint32_t& data, uint32_t mbar_addr) {
     asm volatile (
         "st.async.weak.shared::cluster.mbarrier::complete_tx::bytes.s32 [%0], {%1}, [%2]; \n"
         :
         : "r"(dst_addr), "r"(data), "r"(mbar_addr)
+    );
+}
+
+template<typename T>
+CUTE_DEVICE
+static void st_async_128b(uint32_t dst_addr, const T& data, uint32_t mbar_addr) {
+    static_assert(sizeof(T) == 16);
+    long2 data_long2 = *reinterpret_cast<const long2*>(&data);
+    asm volatile (
+        "st.async.weak.shared::cluster.mbarrier::complete_tx::bytes.v2.s64 [%0], {%1, %2}, [%3]; \n"
+        :
+        : "r"(dst_addr), "l"(data_long2.x), "l"(data_long2.y), "r"(mbar_addr)
     );
 }
 
@@ -160,12 +171,14 @@ public:
         ku::barrier_cluster_wait_acquire();
 
         static_assert(NUM_GATHER_UNITS * sizeof(uint32_t) <= sizeof(smem.incoming_topk_pairs));
-        void* val_dst = (void*)(int64_t)cute::set_block_rank(
+        uint32_t val_dst = cute::set_block_rank(
             cute::cast_smem_ptr_to_uint((uint32_t*)smem.incoming_topk_pairs + rank_in_cluster * (MAX_TOPK / 2)), 0);
             
         static_assert(NUM_GATHER_PAIRS * sizeof(uint64_t) <= sizeof(SharedMemoryPlanBase::tma_load_buf));
-        void* dst = (void*)(int64_t)cute::set_block_rank(
+        uint32_t dst = cute::set_block_rank(
             cute::cast_smem_ptr_to_uint(reinterpret_cast<uint64_t*>(smem.tma_load_buf) + rank_in_cluster * MAX_TOPK), 0);
+        uint32_t gather_val_bar_addr = cute::set_block_rank(cute::cast_smem_ptr_to_uint(&smem.gather_val_bar), 0);
+        uint32_t gather_bar_addr = cute::set_block_rank(cute::cast_smem_ptr_to_uint(&smem.gather_bar), 0);
 
         static_assert(MAX_TOPK*sizeof(ValueT) % 16 == 0);
         constexpr uint32_t NUM_VAL_CHUNKS = MAX_TOPK * sizeof(ValueT) / 16; // 16B store
@@ -179,7 +192,7 @@ public:
             st_async_32b(
                 cute::set_block_rank(cute::cast_smem_ptr_to_uint(smem.gathered_num_survivors + rank_in_cluster), 0),
                 (uint32_t)nan_seen,
-                smem.gather_val_bar
+                gather_val_bar_addr
             );
         }
 
@@ -197,8 +210,8 @@ public:
                 topk_select_common::ld_shared<4>(pair2, (const uint32_t*)(smem.surviving_topk_pairs[survivor_buf_idx] + 8 * c + 2 * j));
                 vw[j] = __byte_perm(pair2[1], pair2[3], 0x5410);  
             }
-            ku::st_async((char*)val_dst + c * sizeof(uint4), make_uint4(vw[0], vw[1], vw[2], vw[3]),
-                        smem.gather_val_bar);
+            st_async_128b(val_dst + c * sizeof(uint4), make_uint4(vw[0], vw[1], vw[2], vw[3]),
+                          gather_val_bar_addr);
         }
 
         // And then store those (value, index) pairs
@@ -209,7 +222,7 @@ public:
         for (uint32_t i = 0; i < NUM_INDEX_VALUE_CHUNKS / NUM_THREADS; ++i) {
             uint32_t s = 2 * (i * NUM_THREADS + threadIdx.x);
             ulonglong2 pp = *reinterpret_cast<const ulonglong2*>(smem.surviving_topk_pairs[survivor_buf_idx] + s);
-            ku::st_async((char*)dst + s * sizeof(uint64_t), pp, smem.gather_bar);
+            st_async_128b(dst + s * sizeof(uint64_t), pp, gather_bar_addr);
         }
 
         if (rank_in_cluster != 0) {
