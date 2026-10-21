@@ -181,7 +181,7 @@ public:
                 constexpr uint32_t NUM_BUCKET_CLEAR_128b = NUM_RECONSTRUCT_BUCKETS / 4;
                 static_assert(NUM_THREADS >= NUM_BUCKET_CLEAR_128b);
                 if (threadIdx.x < NUM_BUCKET_CLEAR_128b) {
-                    reinterpret_cast<__int128_t*>(clr)[threadIdx.x] = (__int128_t)0ull;
+                    reinterpret_cast<ku::int128_t*>(clr)[threadIdx.x] = ku::int128_t{};
                 }
                 __syncthreads();
                 if (warp_idx == 0) {

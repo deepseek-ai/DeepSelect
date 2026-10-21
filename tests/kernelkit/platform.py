@@ -1,7 +1,8 @@
 import enum
 import functools
-import subprocess
 import os
+
+import torch
 
 
 class Platform(enum.Enum):
@@ -13,12 +14,11 @@ class Platform(enum.Enum):
 @functools.lru_cache(maxsize=1)
 def get_current_platform() -> Platform:
     """
-    Get the current platform via `lspci`
+    Detect Ascend first, then check CUDA availability through PyTorch.
     """
     if os.path.exists("/dev/davinci_manager"):
         return Platform.ASCEND
-    output = subprocess.check_output(["lspci"], text=True)
-    if "3D controller: NVIDIA Corporation Device" in output:
+    if torch.version.cuda is not None and torch.cuda.is_available():
         return Platform.CUDA
     return Platform.CPU_ONLY
 

@@ -47,7 +47,7 @@ void ld_shared(ValueT res[NUM_VALUES], const ValueT* ptr) {
     static_assert(NUM_BYTES_TO_LOAD == 16 || NUM_BYTES_TO_LOAD == 8 || NUM_BYTES_TO_LOAD == 4 || NUM_BYTES_TO_LOAD == 2);
     uint32_t addr = cute::cast_smem_ptr_to_uint(ptr);
     if constexpr (NUM_BYTES_TO_LOAD == 16) {
-        *(__int128_t*)res = ku::ld_shared(ptr);
+        *(ku::int128_t*)res = ku::ld_shared(ptr);
     } else if constexpr (NUM_BYTES_TO_LOAD == 8) {
         asm volatile ("ld.weak.shared::cta.b64 %0, [%1];\n" : "=l"(*(int64_t*)res) : "r"(addr) : "memory");
     } else if constexpr (NUM_BYTES_TO_LOAD == 4) {
@@ -221,7 +221,7 @@ struct EpilogueRunner {
                     for (uint32_t i = (threadIdx.x-NUM_THREADS/2) * NUM_VALUES_PER_LDG128; i < end_vocab_idx; i += (NUM_THREADS/2) * NUM_VALUES_PER_LDG128) {
                         ValueT values[NUM_VALUES_PER_LDG128];
                         KU_LDG_128(input_values + i, values, ".nc", "no_allocate", "256B");
-                        ku::st_shared(smem_value_buf + i, *(__int128_t*)values);
+                        ku::st_shared(smem_value_buf + i, *(ku::int128_t*)values);
                     }
                 }
                 __syncthreads();
@@ -586,9 +586,9 @@ public:
     static __device__ __forceinline__ 
     void clear_reconstruct_histograms(SharedMemoryPlanBase &smem, uint32_t thread_idx) {
         static_assert((2 * NUM_RECONSTRUCT_BUCKET_SLOTS) % 4 == 0);
-        __int128_t zero = (__int128_t)0ull;
+        constexpr ku::int128_t zero{};
         for (uint32_t i = thread_idx; i < (2 * NUM_RECONSTRUCT_BUCKET_SLOTS) / 4; i += NUM_THREADS) {
-            reinterpret_cast<__int128_t*>(smem.reconstruct_bucket_counter)[i] = zero;
+            reinterpret_cast<ku::int128_t*>(smem.reconstruct_bucket_counter)[i] = zero;
         }
     }
 
@@ -713,7 +713,7 @@ public:
     // TMA only loads the real tail elements; the unused padded tail region must still be initialized as -INF
     static __device__ __forceinline__ void fill_padded_tail_segments(ValueT *init_buf, uint32_t num_tail_elems) {
         uint32_t tail_covered_by_tma = ku::ceil(num_tail_elems, (uint32_t)NUM_ELEMS_PER_SEG);
-        constexpr __int128_t FILLER_128b = ((__int128_t)PLACEHOLDER_B64 << 64) | PLACEHOLDER_B64;
+        constexpr auto FILLER_128b = ku::make_int128(PLACEHOLDER_B64, PLACEHOLDER_B64);
         for (uint32_t i = tail_covered_by_tma + threadIdx.x * NUM_ELEMS_PER_128b; i < NUM_TAIL_ELEMS; i += NUM_THREADS * NUM_ELEMS_PER_128b) {
             ku::st_shared(init_buf + i, FILLER_128b);
         }

@@ -33,7 +33,7 @@ def check_kernel_reg_spill_in_artifact(artifact_path: str, stack_baseline: int =
         print(f"Checking register spills in: {artifact_path}")
 
     cuda_home = CUDA_HOME if CUDA_HOME is not None else '/usr/local/cuda'
-    cuobjdump_path = os.path.join(cuda_home, 'bin/cuobjdump')
+    cuobjdump_path = os.path.join(cuda_home, 'bin', 'cuobjdump.exe' if os.name == 'nt' else 'cuobjdump')
     if not os.path.exists(cuobjdump_path):
         raise FileNotFoundError(f"cuobjdump not found (looked at {cuobjdump_path})")
     

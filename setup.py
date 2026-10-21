@@ -102,12 +102,14 @@ def build_on_cuda_platform():
 
     assert CUDA_HOME is not None, "PyTorch must be compiled with CUDA support"
 
+    is_windows = os.name == "nt"
+
     def append_nvcc_threads(nvcc_extra_args):
         nvcc_threads = os.getenv("NVCC_THREADS") or "16"
         return nvcc_extra_args + ["--threads", nvcc_threads]
 
     nvcc_version = subprocess.check_output(
-        [os.path.join(CUDA_HOME, "bin", "nvcc"), "--version"],
+        [os.path.join(CUDA_HOME, "bin", "nvcc.exe" if is_windows else "nvcc"), "--version"],
         stderr=subprocess.STDOUT,
     ).decode("utf-8")
     nvcc_version_number = nvcc_version.split("release ")[1].split(",")[0].strip()
@@ -127,12 +129,31 @@ def build_on_cuda_platform():
     ]
 
     this_dir = os.path.dirname(os.path.abspath(__file__))
+    cutlass_include = Path(this_dir) / "csrc" / "3rdparty" / "cutlass" / "include"
+    if not (cutlass_include / "cutlass" / "cutlass.h").is_file():
+        raise RuntimeError(
+            "CUTLASS submodule is missing. Run `git submodule update --init --recursive` before building."
+        )
+
+    cxx_flags = (
+        ["/O2", "/std:c++20", "/DNDEBUG", "/Zc:preprocessor",
+         "/DKERUTILS_IS_BUILD_ON_CUDA", "/DDEEP_SELECT_IS_BUILD_ON_CUDA"]
+        if is_windows else
+        ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations",
+         "-DKERUTILS_IS_BUILD_ON_CUDA", "-DDEEP_SELECT_IS_BUILD_ON_CUDA"]
+    )
+    cccl_include_dirs = (
+        [Path(CUDA_HOME) / "include" / "cccl"] if is_windows else [
+            Path(CUDA_HOME) / "targets" / "x86_64-linux" / "include" / "cccl",
+            Path(CUDA_HOME) / "targets" / "sbsa-linux" / "include" / "cccl",
+        ]
+    )
 
     ext_modules = [CUDAExtension(
         name="deep_select.deep_select_cuda",
         sources=CUDA_SOURCES,
         extra_compile_args={
-            "cxx": ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA", "-DDEEP_SELECT_IS_BUILD_ON_CUDA"],
+            "cxx": cxx_flags,
             "nvcc": append_nvcc_threads([
                 "-O3",
                 "-std=c++20",
@@ -149,19 +170,17 @@ def build_on_cuda_platform():
                 "--ptxas-options=-v,--register-usage-level=10,--warn-on-spills,--warn-on-double-precision-use",
                 "-lineinfo",
                 "--source-in-ptx",
-            ] + cc_flag)
+            ] + (["-Xcompiler=/Zc:preprocessor"] if is_windows else []) + cc_flag)
         },
         include_dirs=[
             Path(this_dir) / "csrc",
-            Path(this_dir) / "csrc" / "3rdparty" / "cutlass" / "include",
+            cutlass_include,
             Path(this_dir) / "csrc" / "3rdparty" / "kerutils" / "include",
-            Path(CUDA_HOME) / "targets" / "x86_64-linux" / "include" / "cccl",
-            Path(CUDA_HOME) / "targets" / "sbsa-linux" / "include" / "cccl",
-        ],
-        extra_link_args=[
-            f'-L{Path(CUDA_HOME) / "targets" / "x86_64-linux" / "lib" / "stubs"}',
-            f'-L{Path(CUDA_HOME) / "targets" / "sbsa-linux" / "lib" / "stubs"}',
-            "-lcuda",
+        ] + cccl_include_dirs,
+        libraries=["cuda"],
+        library_dirs=[] if is_windows else [
+            str(Path(CUDA_HOME) / "targets" / "x86_64-linux" / "lib" / "stubs"),
+            str(Path(CUDA_HOME) / "targets" / "sbsa-linux" / "lib" / "stubs"),
         ],
     )]
 
