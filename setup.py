@@ -5,7 +5,6 @@ from pathlib import Path
 
 from setuptools import setup, find_packages
 
-import tests.kernelkit as kk
 
 exec(open("deep_select/__version__.py").read())
 
@@ -252,16 +251,15 @@ def build_on_ascend_platform():
     return (ext_modules, AscendBuildExtension)
 
 
-build_target_platform = kk.get_current_platform()
-overrided_platform = os.environ.get('DEEP_SELECT_BUILD_TARGET_PLATFORM', None)
-if overrided_platform is not None:
-    overrided_platform_dict = {
-        'CUDA': kk.Platform.CUDA,
-        'ASCEND': kk.Platform.ASCEND,
-    }
-    if overrided_platform not in overrided_platform_dict:
-        raise ValueError(f"Invalid `DEEP_SELECT_BUILD_TARGET_PLATFORM`: {overrided_platform}. Available values are {list(overrided_platform_dict.keys())}")
-    build_target_platform = overrided_platform_dict[overrided_platform]
+# Honor the explicit target before importing CUDA-only test utilities.
+build_target_platform = os.environ.get("DEEP_SELECT_BUILD_TARGET_PLATFORM")
+if build_target_platform is None:
+    import tests.kernelkit as kk
+    build_target_platform = kk.get_current_platform().value
+if build_target_platform not in ("CUDA", "ASCEND"):
+    raise ValueError(f"Unsupported build target: {build_target_platform}")
+if build_target_platform == "CUDA":
+    import tests.kernelkit as kk
 print(f"Build target: {build_target_platform}")
 
 try:
@@ -274,9 +272,9 @@ except Exception:
 
 datetime_rev = datetime.now().strftime("%Y%m%d.%H%M%S")
 
-if build_target_platform == kk.Platform.CUDA:
+if build_target_platform == "CUDA":
     ext_modules, build_ext = build_on_cuda_platform()
-elif build_target_platform == kk.Platform.ASCEND:
+elif build_target_platform == "ASCEND":
     ext_modules, build_ext = build_on_ascend_platform()
 else:
     raise RuntimeError(f"Unsupported platform: {build_target_platform}.\n(You may use `DEEP_SELECT_BUILD_TARGET_PLATFORM` to explicitly set the target platform for building)")
