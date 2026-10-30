@@ -213,10 +213,10 @@ if __name__ == '__main__':
                                 NormalFloatDistribution(post_proc_func)
                                 for post_proc_func in [
                                     None,
-                                    lambda x: x + (100 if enable_end_position else -100),
-                                    lambda x: x * (100 if enable_end_position else 1/100),
-                                    lambda x: x * (1000 if enable_end_position else 1/1000),
-                                    lambda x: x * (10000 if enable_end_position else 1/10000),
+                                    lambda x, e=enable_end_position: x + (100 if e else -100),
+                                    lambda x, e=enable_end_position: x * (100 if e else 1/100),
+                                    lambda x, e=enable_end_position: x * (1000 if e else 1/1000),
+                                    lambda x, e=enable_end_position: x * (10000 if e else 1/10000),
                                 ]
                             ] + [
                                 UniformUIntDistribution(
