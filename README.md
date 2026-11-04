@@ -70,6 +70,11 @@ git submodule update --init --recursive
 pip install -v .
 ```
 
+For a quick CUDA correctness check after installation on a supported GPU, run
+`python3 tests/smoke_cuda.py`. It compares 12 bounded, deterministic cases
+against a CPU reference. This is a smoke test, not the full correctness matrix
+or a performance benchmark.
+
 ## Usage
 
 ```python
