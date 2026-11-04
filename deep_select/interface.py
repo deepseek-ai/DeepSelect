@@ -1,5 +1,6 @@
 import functools
 import importlib
+import importlib.util
 import os
 
 import torch
@@ -11,10 +12,17 @@ _IS_ASCEND = os.path.exists("/dev/davinci_manager")
 
 def _import_backend():
     name = "deep_select_npu" if _IS_ASCEND else "deep_select_cuda"
+    alternate = "deep_select_cuda" if _IS_ASCEND else "deep_select_npu"
+    # A package may have been built for a different target from the devices
+    # visible at import time. Only fall back if the preferred extension is
+    # absent; a broken preferred extension should still report its error.
+    if (importlib.util.find_spec(f"{__package__}.{name}") is None and
+            importlib.util.find_spec(f"{__package__}.{alternate}") is not None):
+        name = alternate
     try:
         return importlib.import_module(f".{name}", __package__)
     except ImportError as e:
-        target = "ASCEND" if _IS_ASCEND else "CUDA"
+        target = "ASCEND" if name == "deep_select_npu" else "CUDA"
         raise ImportError(
             f"DeepSelect: failed to load the backend `{__package__}.{name}`. "
             f"Build it with DEEP_SELECT_BUILD_TARGET_PLATFORM={target}."
