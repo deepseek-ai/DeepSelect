@@ -10,6 +10,7 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAEvent.h>
+#include <c10/cuda/CUDAGuard.h>
 
 #include "kerutils/supplemental/torch_tensors.h"
 
@@ -131,10 +132,24 @@ void topk(
     };
 
 #ifdef DEEP_SELECT_IS_BUILD_ON_CUDA
-    cudaDeviceProp *device_prop = at::cuda::getDeviceProperties(at::cuda::current_device());
+    // The caller's current device is not necessarily the input's device. Every
+    // device query, stream lookup and the launch below must describe one device,
+    // so select the input's device and restore the caller's device on return.
+    const c10::cuda::CUDAGuard device_guard(input.device());
+    auto require_same_device = [&](const char tensor_name[], const torch::Tensor &tensor) {
+        TORCH_CHECK(tensor.device() == input.device(),
+            tensor_name, " must be on the same CUDA device as input (",
+            input.device(), "), got ", tensor.device());
+    };
+    if (end.has_value()) require_same_device("end", *end);
+    if (output_value.has_value()) require_same_device("output_value", *output_value);
+    require_same_device("output_index", output_index);
+    if (output_idx_offset.has_value()) require_same_device("output_idx_offset", *output_idx_offset);
+    TORCH_CHECK(input.device().index() >= 0, "input must be on an explicit CUDA device");
+    cudaDeviceProp *device_prop = at::cuda::getDeviceProperties(input.device().index());
     TORCH_CHECK(device_prop != nullptr);
     args.shared_memory_size_per_sm = device_prop->sharedMemPerBlockOptin;
-    args.stream = at::cuda::getCurrentCUDAStream().stream();
+    args.stream = at::cuda::getCurrentCUDAStream(input.device().index()).stream();
 #else
     // Ascend writes 16-bit bf16 lanes directly, so it takes the pre-rounded bit pattern.
     args.value_oob_fill_bits = c10::BFloat16(static_cast<float>(value_oob_fill_value)).x;
