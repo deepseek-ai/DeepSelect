@@ -203,10 +203,7 @@ void topk(
                         TopkSelectConfig<float, OutIdxT, SORTED_VALUE, SORTED_INDEX, RETURN_VALUE,
                                          MAX_TOPK, NUM_THREADS, OCCUPANCY, B, RT, TMA_DEPTH>>(args);
                 };
-                //   topk <= 128: sampling small-topk tiers, 256t / 2 CTAs per SM / B=4096
-                //                (B300, vocab~=128K): ranked-only ~-20%, sorted_value ~-31%,
-                //                sorted_index ~-11% vs the 512t tier. sorted_index needs
-                //                RT+B >= 8192 for the index-sort delta table, hence RT=4096 / TMA2.
+                //   topk <= 128: small-topk for sampling 256t / 2 CTAs per SM / B=4096
                 //   topk <= 1024: 512t / occ1 / B=8192 / RT=4096 / TMA3
                 //   topk >  1024: 256t / occ1 / B=4096 / RT=4096 / TMA3 (correctness-only coverage tier)
                 if (topk <= 128) {

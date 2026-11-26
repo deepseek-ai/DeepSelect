@@ -6,9 +6,7 @@ DeepSelect 是为 DeepSeek 稀疏注意力（DeepSeek Sparse Attention, DSA）�
 
 ## News
 
-- 2026.11.26: We've released DeepSelect v1.1.1: fix a race and an out-of-range read in the Ascend kernels
-- 2026.11.26: We've released DeepSelect v1.1.0: `float32` TopK on Huawei Ascend NPU
-- 2026.11.26: We've released DeepSelect v1.0.1: faster `float32` TopK for very small `topk` (16, 32 or 64)
+- 2026.11.26: We've released DeepSelect v1.1.0: Add `float32` TopK on Huawei Ascend NPU
 - 2026.09.30: We've released TopK kernels for Huawei Ascend NPU
 - 2026.09.10: We've released a brief analysis of the algorithm and its implementation: [English](docs/DeepSelect-deep-dive.md) | [中文](docs/DeepSelect-deep-dive.zh.md)
 - 2026.09.10: We've released DeepSelect v1.0.0
@@ -23,7 +21,7 @@ This scenario covers:
 - Input dtype: `torch.bfloat16`
 - `batch_size`: $1 \sim +\infty$ (both large and small batch sizes are optimized)
 - `vocab_size`: $1 \sim +\infty$ (both large and small vocabularies are optimized)
-- `topk`: small (must be $\le 4096$; larger values are not supported), mainly optimized for `topk=512` (i.e., DeepSeek V4's `topk`) and `topk=1024`
+- `topk`: small (must be $\le 4096$; larger values are not supported), mainly optimized for `topk=512` (i.e., DeepSeek V4's `topk`)
 
 Recommendations:
 - Disable `sorted_index` unless the output has to be ordered by index; enabling it costs performance.
@@ -63,6 +61,12 @@ bfloat16, `topk = 512`, one subplot per batch size.
 float32, `vocab_size = 129280`, `topk = 512`.
 
 ![DeepSelect vs torch.topk, float32 Sampling, CUDA](assets/perf_fp32_cuda.png)
+
+### Sampling Scenario (Ascend)
+
+float32, `vocab_size = 129280`, `topk = 512`.
+
+![DeepSelect vs torch.topk, float32 Sampling, Ascend](assets/perf_fp32_ascend.png)
 
 ## Installation
 
