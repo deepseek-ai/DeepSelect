@@ -206,7 +206,7 @@ if __name__ == '__main__':
                         if vocab_size > MAX_VOCAB_SIZE:
                             continue    # `vocab_size` exceeds what the backend supports (see MAX_VOCAB_SIZE)
                         for topk in [
-                            1, random.randint(2, 500), 512, 1024, 1231, 2048, 2132, 2333, 4096
+                            1, random.randint(2, 128), random.randint(2, 500), 512, 1024, 1231, 2048, 2132, 2333, 4096
                         ]:
                             enable_end_position = topk%2 == 1   # Use this method instead of enumerating it to save testcase count
                             for distrib in [
@@ -251,6 +251,11 @@ if __name__ == '__main__':
         TestParam(b, vocab_size, 512, True, False, True, torch.float, torch.int64, num_runs=10)
         for b in [6, 256, 512, 768, 4096]
         for vocab_size in [129280]
+    ] + [
+        # Sampler, small topk (fp32 / no sort, dump topk logits for training)
+        TestParam(b, 129280, topk, False, False, False, torch.float, torch.int32, num_runs=10)
+        for topk in [16, 32, 64, 128]
+        for b in [512, 1024, 2048, 4096]
     ]
 
     testcases = correctness_cases + performance_cases

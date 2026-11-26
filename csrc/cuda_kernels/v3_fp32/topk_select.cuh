@@ -60,7 +60,7 @@ public:
 
     static constexpr uint32_t PLACEHOLDER = 0xff800000; // -INF
     static constexpr uint32_t NEG_INF_BITS = 0xFF800000;
-    static_assert(MAX_TOPK == 512 || MAX_TOPK == 1024 || MAX_TOPK == 4096);
+    static_assert(MAX_TOPK == 256 || MAX_TOPK == 512 || MAX_TOPK == 1024 || MAX_TOPK == 4096);
     static constexpr bool HAS_PARTIAL_ROUNDS = NUM_SEGS_PER_ROUND > NUM_TAIL_SEGS;
 
     struct SharedMemoryPlanFP32 : SharedMemoryPlanBase {};
