@@ -209,6 +209,10 @@ if __name__ == '__main__':
                             1, random.randint(2, 128), random.randint(2, 500), 512, 1024, 1231, 2048, 2132, 2333, 4096
                         ]:
                             enable_end_position = topk%2 == 1   # Use this method instead of enumerating it to save testcase count
+                            # The default argument pins this round's flag when the lambda is defined.
+                            # Reading `enable_end_position` in the body would not work: the
+                            # distributions are not generated until this construction loop is over,
+                            # so every one of them would see the last round's value.
                             for distrib in [
                                 NormalFloatDistribution(post_proc_func)
                                 for post_proc_func in [
