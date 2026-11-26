@@ -211,13 +211,13 @@ class TestParam:
         if kk.is_on_cuda_platform():
             return True
         elif kk.is_on_ascend_platform():
-            if self.dtype != torch.bfloat16:
-                return False
-            if self.out_idx_dtype != torch.int32:
-                return False
-            if self.sorted_value:
-                return False
-            return True
+            # The Ascend backend supports bf16 (int32 indices, no sorting by value) and fp32
+            # (int32 or int64 indices, all sort modes).
+            if self.dtype == torch.bfloat16:
+                return self.out_idx_dtype == torch.int32 and not self.sorted_value
+            if self.dtype == torch.float:
+                return self.out_idx_dtype in (torch.int32, torch.int64)
+            return False
         else:
             raise RuntimeError("Unknown platform")
 

@@ -27,7 +27,8 @@
 
 #include "kerutils/supplemental/torch_tensors.h"
 
-#include "ascend_kernels/kernel.h"
+#include "ascend_kernels/bf16/kernel.h"
+#include "ascend_kernels/fp32/kernel.h"
 
 #else
 #error "Exactly one of DEEP_SELECT_IS_BUILD_ON_CUDA / DEEP_SELECT_IS_BUILD_ON_ASCEND must be defined (see setup.py)"
@@ -194,18 +195,31 @@ void topk(
                     "vocab_size must be < 2^23 for float32 input");
 
         INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
-            //   topk <= 1024        -> 512t / B8192 / B2 4096 / TMA3
-            //   topk in (1024,4096] -> 256t / B4096 / B2 4096 / TMA3 (correctness-only coverage tier)
             auto dispatch = [&]<bool SORTED_VALUE, bool SORTED_INDEX, bool RETURN_VALUE>() {
-                auto launch = [&]<uint32_t MAX_TOPK, uint32_t NUM_THREADS, uint32_t B>() {
-                    topk_select_fp32::run_topk_select_kernel<TopkSelectConfig<float, OutIdxT, SORTED_VALUE, SORTED_INDEX, RETURN_VALUE, MAX_TOPK, NUM_THREADS, 1, B, 4096, 3>>(args);
+                // One place for every fp32 tier: (MAX_TOPK, NUM_THREADS, OCCUPANCY, B, RT, TMA_DEPTH)
+                auto launch = [&]<uint32_t MAX_TOPK, uint32_t NUM_THREADS, uint32_t OCCUPANCY,
+                                  uint32_t B, uint32_t RT, uint32_t TMA_DEPTH>() {
+                    topk_select_fp32::run_topk_select_kernel<
+                        TopkSelectConfig<float, OutIdxT, SORTED_VALUE, SORTED_INDEX, RETURN_VALUE,
+                                         MAX_TOPK, NUM_THREADS, OCCUPANCY, B, RT, TMA_DEPTH>>(args);
                 };
-                if (topk <= 512) {
-                    launch.template operator()<512, 512, 8192>();
+                //   topk <= 128: small-topk for sampling 256t / 2 CTAs per SM / B=4096
+                //   topk <= 1024: 512t / occ1 / B=8192 / RT=4096 / TMA3
+                //   topk >  1024: 256t / occ1 / B=4096 / RT=4096 / TMA3 (correctness-only coverage tier)
+                if (topk <= 128) {
+                    if constexpr (SORTED_VALUE) {
+                        launch.template operator()<256, 256, 2, 4096, 768, 4>();
+                    } else if constexpr (SORTED_INDEX) {
+                        launch.template operator()<256, 256, 2, 4096, 4096, 2>();
+                    } else {
+                        launch.template operator()<256, 256, 2, 4096, 768, 4>();
+                    }
+                } else if (topk <= 512) {
+                    launch.template operator()<512, 512, 1, 8192, 4096, 3>();
                 } else if (topk <= 1024) {
-                    launch.template operator()<1024, 512, 8192>();
+                    launch.template operator()<1024, 512, 1, 8192, 4096, 3>();
                 } else {
-                    launch.template operator()<4096, 256, 4096>();
+                    launch.template operator()<4096, 256, 1, 4096, 4096, 3>();
                 }
             };
             if (sorted_value) {
@@ -220,30 +234,55 @@ void topk(
         });
     }
 #else
-    TORCH_CHECK(value_t == at::kBFloat16, "input dtype must be bfloat16 on Ascend");
-    TORCH_CHECK(output_index_t == at::kInt, "output_idx dtype must be torch.int32 on Ascend");
-    TORCH_CHECK(!sorted_value, "sorting by value is not supported on Ascend");
-    TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
-                "vocab_size must be < 2M for bfloat16 input");
+    TORCH_CHECK(value_t == at::kBFloat16 || value_t == at::kFloat,
+                "input dtype must be bfloat16 or float32 on Ascend");
+    TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE, "vocab_size must be < 2M on Ascend");
 
-    BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
-        using topk_select_ascend::Config;
-        using topk_select_ascend::run_topk_select_kernel;
-        const auto launch = [&]<bool kAbortWhenNanFound>() {
-            if (topk <= 512) {
-                run_topk_select_kernel<Config{512, kAbortWhenNanFound, SORTED_INDEX}>(args);
-            } else if (topk <= 1024) {
-                run_topk_select_kernel<Config{1024, kAbortWhenNanFound, SORTED_INDEX}>(args);
+    if (value_t == at::kFloat) {
+        // The fp32 kernel covers all three sort modes (none, by index, by value) and both output
+        // index types.
+        TORCH_CHECK(output_index_t == at::kInt || output_index_t == at::kLong,
+                    "output_idx dtype must be torch.int32 or torch.int64 for float32 on Ascend");
+        using topk_select_ascend_fp32::Config;
+        using topk_select_ascend_fp32::run_topk_select_kernel;
+        BOOL_SWITCH(output_index_t == at::kLong, OUT_IDX_INT64, [&]() {
+            const auto launch = [&]<bool kSortedIndex, bool kSortedValue>() {
+                if (topk <= 512) {
+                    run_topk_select_kernel<
+                        Config{512, kSortedIndex, kSortedValue, OUT_IDX_INT64}>(args);
+                } else if (topk <= 1024) {
+                    run_topk_select_kernel<
+                        Config{1024, kSortedIndex, kSortedValue, OUT_IDX_INT64}>(args);
+                } else {
+                    run_topk_select_kernel<
+                        Config{4096, kSortedIndex, kSortedValue, OUT_IDX_INT64}>(args);
+                }
+            };
+            if (sorted_value) {
+                launch.template operator()<false, true>();
+            } else if (sorted_index) {
+                launch.template operator()<true, false>();
             } else {
-                run_topk_select_kernel<Config{4096, kAbortWhenNanFound, SORTED_INDEX}>(args);
+                launch.template operator()<false, false>();
             }
-        };
-        if (abort_when_nan_found) {
-            launch.template operator()<true>();
-        } else {
-            launch.template operator()<false>();
-        }
-    });
+        });
+    } else {
+        TORCH_CHECK(output_index_t == at::kInt,
+                    "output_idx dtype must be torch.int32 for bfloat16 on Ascend");
+        TORCH_CHECK(!sorted_value, "sorting by value is only supported for float32 on Ascend");
+
+        BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
+            using topk_select_ascend::Config;
+            using topk_select_ascend::run_topk_select_kernel;
+            if (topk <= 512) {
+                run_topk_select_kernel<Config{512, SORTED_INDEX}>(args);
+            } else if (topk <= 1024) {
+                run_topk_select_kernel<Config{1024, SORTED_INDEX}>(args);
+            } else {
+                run_topk_select_kernel<Config{4096, SORTED_INDEX}>(args);
+            }
+        });
+    }
 #endif
 }
 

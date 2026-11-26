@@ -47,7 +47,7 @@ class TopkSelectConfigs:
             assert not self.sorted_index, "`sorted_value` and `sorted_index` cannot be specified at the same time"
         if self.ValueT == "nv_bfloat16":
             assert not self.sorted_value, "`sorted_value` is fp32-only"
-        assert self.max_topk in [512, 1024, 4096]
+        assert self.max_topk in [256, 512, 1024, 4096]
         assert self.elements_per_round == self.num_threads * 16, "contract ABI: B = NUM_THREADS * 16"
         assert self.reconstruct_threshold >= self.max_topk, "RECONSTRUCT_THRESHOLD >= MAX_TOPK"
         assert 1 <= self.cluster <= 16, "Invalid `cluster`"
@@ -137,8 +137,23 @@ def main(instantiation_dir: str):
             1024: (512, 1, 8192, 4096, 3),
             4096: (256, 1, 4096, 4096, 3),
         }
+        # Small-topk tiers for the fp32 sampling scenario (topk <= 128), all 256 threads /
+        # 2 CTAs per SM / B=4096:
+        #   ranked-only  : RT768  / TMA4 (RT < 4096 relies on the conditional delta-table assert)
+        #   sorted_value : RT768  / TMA4
+        #   sorted_index : RT4096 / TMA2 (the index-sort delta table needs (RT+B)*8/4 >= MAX_VOCAB_SIZE/512)
+        small_topk_tuple = (256, 2, 4096, 768, 4)
+        small_topk_si_tuple = (256, 2, 4096, 4096, 2)
         configs = []
         for out_idx_t in ["int32_t", "int64_t"]:
+            for rv in [False, True]:
+                num_threads, occ, b, b2, tma = small_topk_tuple
+                configs.append(TopkSelectConfigs("float", out_idx_t, False, False, rv, 256, num_threads, occ, b, b2, tma))
+            num_threads, occ, b, b2, tma = small_topk_tuple
+            configs.append(TopkSelectConfigs("float", out_idx_t, True, False, True, 256, num_threads, occ, b, b2, tma))
+            for rv in [False, True]:
+                num_threads, occ, b, b2, tma = small_topk_si_tuple
+                configs.append(TopkSelectConfigs("float", out_idx_t, False, True, rv, 256, num_threads, occ, b, b2, tma))
             for sv, si, rv in valid_sv_si_rv_combinations_fp32:
                 for max_topk, (num_threads, occ, b, b2, tma) in tuple_by_max_topk.items():
                     configs.append(TopkSelectConfigs("float", out_idx_t, sv, si, rv, max_topk, num_threads, occ, b, b2, tma))

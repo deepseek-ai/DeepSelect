@@ -178,7 +178,7 @@ if __name__ == '__main__':
     lib.stick_unit_test_args(parser)
     parser.add_argument("--dtype", choices=["fp32", "bf16"], default=None,
                         help="Only run testcases whose input dtype matches")
-    parser.add_argument("--perf-only", action="store_true",
+    parser.add_argument("-pf", "--perf-only", action="store_true",
                         help="Only run performance testcases (num_runs > 0)")
     args = parser.parse_args()
 
@@ -206,9 +206,13 @@ if __name__ == '__main__':
                         if vocab_size > MAX_VOCAB_SIZE:
                             continue    # `vocab_size` exceeds what the backend supports (see MAX_VOCAB_SIZE)
                         for topk in [
-                            1, random.randint(2, 500), 512, 1024, 1231, 2048, 2132, 2333, 4096
+                            1, random.randint(2, 128), random.randint(2, 500), 512, 1024, 1231, 2048, 2132, 2333, 4096
                         ]:
                             enable_end_position = topk%2 == 1   # Use this method instead of enumerating it to save testcase count
+                            # The default argument pins this round's flag when the lambda is defined.
+                            # Reading `enable_end_position` in the body would not work: the
+                            # distributions are not generated until this construction loop is over,
+                            # so every one of them would see the last round's value.
                             for distrib in [
                                 NormalFloatDistribution(post_proc_func)
                                 for post_proc_func in [
@@ -249,8 +253,13 @@ if __name__ == '__main__':
     ] + [
         # Sampler
         TestParam(b, vocab_size, 512, True, False, True, torch.float, torch.int64, num_runs=10)
-        for b in [6, 256, 512, 768, 4096]
+        for b in [6, 32, 48, 256, 512]
         for vocab_size in [129280]
+    ] + [
+        # Sampler, small topk (fp32 / no sort, dump topk logits for training)
+        TestParam(b, 129280, topk, False, False, False, torch.float, torch.int32, num_runs=10)
+        for topk in [16, 32, 64, 128]
+        for b in [512, 1024, 2048, 4096]
     ]
 
     testcases = correctness_cases + performance_cases

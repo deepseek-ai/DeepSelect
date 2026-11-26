@@ -6,6 +6,7 @@ DeepSelect 是为 DeepSeek 稀疏注意力（DeepSeek Sparse Attention, DSA）�
 
 ## News
 
+- 2026.11.26: We've released DeepSelect v1.1.0: Add `float32` TopK on Huawei Ascend NPU
 - 2026.09.30: We've released TopK kernels for Huawei Ascend NPU
 - 2026.09.10: We've released a brief analysis of the algorithm and its implementation: [English](docs/DeepSelect-deep-dive.md) | [中文](docs/DeepSelect-deep-dive.zh.md)
 - 2026.09.10: We've released DeepSelect v1.0.0
@@ -32,9 +33,9 @@ This scenario covers:
 - Input dtype: `torch.float32`
 - `batch_size`: $1 \sim +\infty$
 - `vocab_size`: around 128K
-- `topk`: small (must be $\le 4096$; larger values are not supported)
+- `topk`: small (must be $\le 4096$; larger values are not supported). Very small values of `topk` (16, 32 or 64), as used when dumping topk logits, have their own optimized tier.
 
-Currently, only the CUDA implementation supports `torch.float32` as the input dtype. The Ascend implementation supports `torch.bfloat16` only.
+On Ascend, `torch.bfloat16` input supports `torch.int32` indices and no sorting by value; `torch.float32` input additionally supports `torch.int64` indices and `sorted=True`.
 
 ## Performance
 
@@ -61,6 +62,12 @@ float32, `vocab_size = 129280`, `topk = 512`.
 
 ![DeepSelect vs torch.topk, float32 Sampling, CUDA](assets/perf_fp32_cuda.png)
 
+### Sampling Scenario (Ascend)
+
+float32, `vocab_size = 129280`, `topk = 512`.
+
+![DeepSelect vs torch.topk, float32 Sampling, Ascend](assets/perf_fp32_ascend.png)
+
 ## Installation
 
 ```bash
@@ -85,9 +92,9 @@ x = torch.randn(batch_size, vocab_size, dtype=torch.bfloat16, device="cuda")
 values, indices = deep_select.topk(
     x,
     topk,
-    sorted=False,              # sort the result by values in descending order (only the FP32 variant on the CUDA platform supports this)
+    sorted=False,              # sort the result by values in descending order (only supported for float32 input)
     sorted_index=True,         # return each row's indices in ascending order
-    indices_type=torch.int32,  # torch.int32 or torch.int64 (The Ascend implementation only supports `torch.int32`)
+    indices_type=torch.int32,  # torch.int32 or torch.int64 (Ascend: int32 only for bfloat16 input)
     return_value=True,         # False skips the value output (~10% faster)
 )
 # values:  (batch_size, topk) of x.dtype

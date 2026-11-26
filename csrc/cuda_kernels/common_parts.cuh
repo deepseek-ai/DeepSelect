@@ -378,7 +378,10 @@ public:
 
     static_assert(NUM_EXTRA_SLOTS * sizeof(uint64_t) >= NUM_ELEMS_IN_INIT_WINDOW * sizeof(ValueT),
                 "the init window must fit in the extra pairs region");
-    static_assert(NUM_EXTRA_SLOTS * sizeof(uint64_t) / sizeof(uint32_t) >= MAX_VOCAB_SIZE / NUM_ELEMS_PER_SEG,
+    // The window delta table is only used by the sorted_index epilogue, so small-topk /
+    // ranked-only tiers are allowed to use a smaller reconstruct threshold.
+    static_assert(!Config::sorted_index ||
+                NUM_EXTRA_SLOTS * sizeof(uint64_t) / sizeof(uint32_t) >= MAX_VOCAB_SIZE / NUM_ELEMS_PER_SEG,
                 "the index sort's window delta table must fit in the extra pairs region");
     // array `incoming_topk_pairs` will be used as 
     //     1. tma buffer during init phase

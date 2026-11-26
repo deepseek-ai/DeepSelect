@@ -49,14 +49,16 @@ def topk(
 ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
     """
     Arguments:
-        input: (b, vocab_size), dtype=torch.bfloat16/torch.float. Ascend only supports torch.bfloat16. stride(0) must be a multiple of `deep_select.get_stride_requirement()[0]` bytes, and stride(1) must be 1.
+        input: (b, vocab_size), dtype=torch.bfloat16/torch.float. stride(0) must be a multiple of `deep_select.get_stride_requirement()[0]` bytes, and stride(1) must be 1.
         topk: int. Select topk elements for each row.
-        sorted: bool. Whether to return sorted **output_val**. Only supports fp32. Ascend only supports False.
+        sorted: bool. Whether to return sorted **output_val**, in descending order. Only supported for float32 input, on both platforms. Cannot be combined with `sorted_index`.
         begin(optional): (b,), dtype=int32. CURRENTLY NOT SUPPORTED. The left(inclusive) range for input row, default is 0.
         end(optional): (b,), dtype=int32. The right(exclusive) range for input row, default is vocab_size. The stride of this tensor must be 1.
                        Note when end[i] <= topk, valid elements will be gathered at the beginning of values and indices returned. The rest of `values` will be filled with `value_oob_fill_value`, while the rest of `indices` will be filled with `idx_oob_fill_value` (won't be plused by `output_idx_offset`).
                        `end` <= `vocab_size` must be held
-        indices_type: torch.dtype. The output indices dtype, only support torch.int32 and torch.int64. Ascend only supports torch.int32.
+        indices_type: torch.dtype. The output indices dtype, only support torch.int32 and torch.int64.
+                       On Ascend, bfloat16 input only supports torch.int32 while float32 input
+                       supports both.
         sorted_index: bool. Whether to return sorted **output_idx**.
         hint(optional): CURRENTLY NOT SUPPORTED
         output_idx(optional): (b, topk), dtype=indices_type. A contiguous tensor to store output.
