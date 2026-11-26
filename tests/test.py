@@ -178,7 +178,7 @@ if __name__ == '__main__':
     lib.stick_unit_test_args(parser)
     parser.add_argument("--dtype", choices=["fp32", "bf16"], default=None,
                         help="Only run testcases whose input dtype matches")
-    parser.add_argument("--perf-only", action="store_true",
+    parser.add_argument("-pf", "--perf-only", action="store_true",
                         help="Only run performance testcases (num_runs > 0)")
     args = parser.parse_args()
 
@@ -249,7 +249,7 @@ if __name__ == '__main__':
     ] + [
         # Sampler
         TestParam(b, vocab_size, 512, True, False, True, torch.float, torch.int64, num_runs=10)
-        for b in [6, 256, 512, 768, 4096]
+        for b in [6, 32, 48, 256, 512]
         for vocab_size in [129280]
     ] + [
         # Sampler, small topk (fp32 / no sort, dump topk logits for training)

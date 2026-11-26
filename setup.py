@@ -224,11 +224,13 @@ def build_on_ascend_platform():
             name="deep_select.deep_select_npu",
             sources=[
                 "csrc/api.cpp",
-                "csrc/ascend_kernels/kernel.asc",
+                "csrc/ascend_kernels/bf16/kernel.asc",
+                "csrc/ascend_kernels/fp32/kernel.asc",
             ],
             include_dirs=[
                 Path(this_dir) / "csrc",
-                Path(this_dir) / "csrc/ascend_kernels",
+                Path(this_dir) / "csrc/ascend_kernels/bf16",
+                Path(this_dir) / "csrc/ascend_kernels/fp32",
                 Path(this_dir) / "csrc" / "3rdparty" / "kerutils" / "include",
                 Path(asc_home) / "include",
             ],
