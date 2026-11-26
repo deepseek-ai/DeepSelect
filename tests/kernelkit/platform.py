@@ -1,7 +1,7 @@
 import enum
 import functools
-import subprocess
 import os
+import subprocess
 
 
 class Platform(enum.Enum):
@@ -13,13 +13,23 @@ class Platform(enum.Enum):
 @functools.lru_cache(maxsize=1)
 def get_current_platform() -> Platform:
     """
-    Get the current platform via `lspci`
+    Get the current platform via device files, torch, or `lspci`
     """
     if os.path.exists("/dev/davinci_manager"):
         return Platform.ASCEND
-    output = subprocess.check_output(["lspci"], text=True)
-    if "3D controller: NVIDIA Corporation Device" in output:
-        return Platform.CUDA
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return Platform.CUDA
+    except (ImportError, RuntimeError, OSError):
+        pass
+
+    try:
+        output = subprocess.check_output(["lspci"], text=True, stderr=subprocess.DEVNULL)
+        if "3D controller: NVIDIA Corporation Device" in output or "NVIDIA Corporation" in output:
+            return Platform.CUDA
+    except (subprocess.SubprocessError, OSError):
+        pass
     return Platform.CPU_ONLY
 
 

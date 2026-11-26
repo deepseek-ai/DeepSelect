@@ -20,7 +20,17 @@ def _import_backend():
             f"Build it with DEEP_SELECT_BUILD_TARGET_PLATFORM={target}."
         ) from e
 
-_backend = _import_backend()
+try:
+    _backend = _import_backend()
+except ImportError:
+    _backend = None
+
+
+def get_backend():
+    global _backend
+    if _backend is None:
+        _backend = _import_backend()
+    return _backend
 
 
 @functools.lru_cache(maxsize=1)
@@ -28,7 +38,7 @@ def get_stride_requirement() -> Tuple[int, int]:
     """
     Returns the stride requirement for input / output tensors, in bytes
     """
-    return _backend.get_alignment_requirement()
+    return get_backend().get_alignment_requirement()
 
 
 def topk(
@@ -73,7 +83,39 @@ def topk(
                     The output tensors may not be contiguous, when topk * sizeof(input.dtype or indices_dtype) is not a multiple of 32 Bytes
     """
 
+    if not isinstance(topk, int) or topk <= 0 or topk > 4096:
+        raise ValueError(f"topk must be an integer in [1, 4096], got {topk}")
+
+    if not isinstance(input, torch.Tensor) or input.dim() != 2:
+        raise ValueError(f"input must be a 2D tensor of shape (batch_size, vocab_size), got {input.dim() if isinstance(input, torch.Tensor) else type(input)}")
+
+    if indices_type not in (torch.int32, torch.int64):
+        raise TypeError(f"indices_type must be torch.int32 or torch.int64, got {indices_type}")
+
+    if begin is not None:
+        raise NotImplementedError("`begin` is not supported now")
+    if hint is not None:
+        raise NotImplementedError("`hint` is not supported now")
+
     N = input.shape[0]
+
+    if output_idx is not None:
+        if output_idx.shape != (N, topk):
+            raise ValueError(f"output_idx shape must be ({N}, {topk}), got {output_idx.shape}")
+        if output_idx.dtype != indices_type:
+            raise TypeError(f"output_idx dtype must be {indices_type}, got {output_idx.dtype}")
+
+    if end is not None:
+        if end.shape != (N,):
+            raise ValueError(f"end shape must be ({N},), got {end.shape}")
+        if end.dtype != torch.int32:
+            raise TypeError(f"end dtype must be torch.int32, got {end.dtype}")
+
+    if output_idx_offset is not None:
+        if output_idx_offset.shape != (N,):
+            raise ValueError(f"output_idx_offset shape must be ({N},), got {output_idx_offset.shape}")
+        if output_idx_offset.dtype != torch.int32:
+            raise TypeError(f"output_idx_offset dtype must be torch.int32, got {output_idx_offset.dtype}")
 
     def get_empty_and_aligned_tensor(dim0: int, dim1: int, device: torch.device, dtype: torch.dtype):
         """
@@ -82,17 +124,13 @@ def topk(
         output_stride_requirement_bytes = get_stride_requirement()[1]
         output_stride_requirement = output_stride_requirement_bytes // dtype.itemsize
         assert output_stride_requirement > 0
-        dim1_rounded = (dim1+output_stride_requirement-1) // output_stride_requirement * output_stride_requirement
+        dim1_rounded = (dim1 + output_stride_requirement - 1) // output_stride_requirement * output_stride_requirement
         return torch.empty((dim0, dim1_rounded), device=device, dtype=dtype)[:, :dim1]
-    
+
     output_val = get_empty_and_aligned_tensor(N, topk, device=input.device, dtype=input.dtype) if return_value else None
     if output_idx is None:
         output_idx = get_empty_and_aligned_tensor(N, topk, device=input.device, dtype=indices_type)
-    else:
-        assert output_idx.dtype == indices_type
 
-    assert begin is None, "`begin` is not supported now"
-    assert hint is None, "`hint` is not supported now"
     backend_args = (
         input,
         topk,
@@ -105,5 +143,5 @@ def topk(
         return_value,
         abort_when_nan_found,
     )
-    _backend.topk(*backend_args)
+    get_backend().topk(*backend_args)
     return output_val, output_idx
