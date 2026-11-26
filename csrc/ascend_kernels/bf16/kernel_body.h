@@ -774,8 +774,13 @@ __aicore__ void Kernel<CONFIG, ALGO_CONFIG>::run(const RowArgs& row) {
             num_warmup_elements += page_count;
         }
 
+        // The page map is written by the scalar core and read by the vector core, and the two run concurrently, so the hand-off needs an explicit S->V event. Signal it as soon as the stores are issued and only wait right before the first VF that reads the map.
+        event_t page_map_ready = event_t(Flags::PAGE_MAP_READY);
+        set_flag(PIPE_S, PIPE_V, page_map_ready);
+
         const uint32_t stable_pages = num_shuffle_pages - num_warmup_pages;
         const uint32_t stable_blocks = ceil_div(stable_pages, PAGES_PER_BLOCK);
+        wait_flag(PIPE_S, PIPE_V, page_map_ready);
         // `IS_WARMUP` already forces the radix rebuild below, so there is no
         // separate "finalize" variant to pick here.
         select_candidates_vf<true, true, WARMUP_ELEMENTS>(ub, topk, num_warmup_elements,
@@ -805,6 +810,7 @@ __aicore__ void Kernel<CONFIG, ALGO_CONFIG>::run(const RowArgs& row) {
                     static_cast<uint16_t>(page_offset / 128);
                 count += page_count;
             }
+            set_flag(PIPE_S, PIPE_V, page_map_ready);
             event_t stage_full = event_t(Flags::INPUT_STAGE_FULL_BASE + stage);
             set_flag(PIPE_MTE2, PIPE_V, stage_full);
             wait_flag(PIPE_MTE2, PIPE_V, stage_full);
@@ -812,6 +818,7 @@ __aicore__ void Kernel<CONFIG, ALGO_CONFIG>::run(const RowArgs& row) {
             // a 64K boundary and can share one index-high value.
             const uint32_t index_base = (stable_idx + 1) * BLOCK_SIZE;
             const bool finalize = stable_idx + 1 == stable_blocks;
+            wait_flag(PIPE_S, PIPE_V, page_map_ready);
             if (finalize)
                 select_candidates_vf<false, false, 0, true>(ub, topk, 0, count, index_base,
                                                                 stage);
@@ -911,8 +918,9 @@ __aicore__ inline void run_topk_select_row(const TopkSelectArgs& args) {
 
     const uint32_t row_idx = get_block_idx();
     RowArgs row;
-    row.valid_len =
+    const uint32_t raw_valid_len =
         args.end_ptr == nullptr ? args.vocab_size : static_cast<uint32_t>(args.end_ptr[row_idx]);
+    row.valid_len = raw_valid_len < args.vocab_size ? raw_valid_len : args.vocab_size;
     row.topk = args.topk;
     row.abort_when_nan_found = args.abort_when_nan_found;
     row.row_in =

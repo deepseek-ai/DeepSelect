@@ -6,6 +6,7 @@ DeepSelect 是为 DeepSeek 稀疏注意力（DeepSeek Sparse Attention, DSA）�
 
 ## News
 
+- 2026.11.26: We've released DeepSelect v1.1.1: fix a race and an out-of-range read in the Ascend kernels
 - 2026.11.26: We've released DeepSelect v1.1.0: `float32` TopK on Huawei Ascend NPU
 - 2026.11.26: We've released DeepSelect v1.0.1: faster `float32` TopK for very small `topk` (16, 32 or 64)
 - 2026.09.30: We've released TopK kernels for Huawei Ascend NPU

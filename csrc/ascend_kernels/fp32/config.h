@@ -358,6 +358,8 @@ struct Kernel {
         static constexpr uint32_t WARMUP_PAGE_FULL_BASE = 4;  // [4, 4 + WARMUP_PAGES)
         // V -> MTE3: the output value/index block is ready.
         static constexpr uint32_t OUTPUT_READY = 0;
+        // S -> V: the scalar core finished writing the page map (`shuffle_page_ids`) and the vector-side index materialization may now read it.
+        static constexpr uint32_t PAGE_MAP_READY = 0;
         // V -> S: the NaN lane counter (and the result count) are visible to the scalar core.
         static constexpr uint32_t NAN_LANE_COUNT_READY = 0;
     };

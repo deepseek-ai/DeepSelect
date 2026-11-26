@@ -370,6 +370,8 @@ struct Kernel {
         // V -> MTE3 / MTE3 -> V: the output value/index block is ready / drained.
         static constexpr uint32_t OUTPUT_READY = 0;
         static constexpr uint32_t OUTPUT_DRAINED = 0;
+        // S -> V: the scalar core finished writing the page map (`shuffle_page_ids`) and the vector-side index restoration may now read it.
+        static constexpr uint32_t PAGE_MAP_READY = 0;
         // V -> S: the NaN lane counter (and the result count) are visible to the scalar core.
         static constexpr uint32_t NAN_LANE_COUNT_READY = 0;
     };

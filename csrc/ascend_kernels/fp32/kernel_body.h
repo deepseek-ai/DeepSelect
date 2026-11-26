@@ -885,8 +885,13 @@ __aicore__ void Kernel<CONFIG>::run(const RowArgs& row) {
             num_warmup_elements += page_count;
         }
 
+        // The page map is written by the scalar core and read by the vector core, and the two run concurrently, so the hand-off needs an explicit S->V event. Signal it as soon as the stores are issued and only wait right before the first VF that reads the map.
+        event_t page_map_ready = event_t(Flags::PAGE_MAP_READY);
+        set_flag(PIPE_S, PIPE_V, page_map_ready);
+
         const uint32_t stable_pages = num_shuffle_pages - num_warmup_pages;
         const uint32_t stable_blocks = ceil_div(stable_pages, PAGES_PER_BLOCK);
+        wait_flag(PIPE_S, PIPE_V, page_map_ready);
         build_warmup_index_vf(ub, num_warmup_elements);
         // `IS_WARMUP` already forces the radix rebuild below, so there is no separate
         // "finalize" variant to pick here.
@@ -914,11 +919,13 @@ __aicore__ void Kernel<CONFIG>::run(const RowArgs& row) {
                 ub.shuffle_page_ids[virtual_page_id] = page_offset;
                 count += page_count;
             }
+            set_flag(PIPE_S, PIPE_V, page_map_ready);
             event_t stage_full = event_t(Flags::INPUT_STAGE_FULL_BASE + stage);
             set_flag(PIPE_MTE2, PIPE_V, stage_full);
             wait_flag(PIPE_MTE2, PIPE_V, stage_full);
             const uint32_t page_base = (stable_idx + 1) * PAGES_PER_BLOCK;
             const bool finalize = stable_idx + 1 == stable_blocks;
+            wait_flag(PIPE_S, PIPE_V, page_map_ready);
             if (finalize)
                 select_candidates_vf<false, true>(ub, topk, 0, count, page_base, stage);
             else
@@ -984,9 +991,13 @@ __aicore__ void Kernel<CONFIG>::run(const RowArgs& row) {
                                                SORT_COUNT);
             LocalTensor<uint8_t> temporary_tensor(TPosition::VECCALC, Ub::SORT_TEMPORARY_OFFSET,
                                                   SORT_TEMPORARY_BYTES);
-            AscendC::Sort<float, uint32_t, true, SORT_MERGE_DESCENDING>(
-                merged_tensor, index_tensor, source_value_tensor, source_index_tensor,
-                temporary_tensor, sort_count);
+            // A row with no valid element has nothing to sort, and the library requires a
+            // positive count; the fill restoration below still covers the whole output.
+            if (sort_count != 0) {
+                AscendC::Sort<float, uint32_t, true, SORT_MERGE_DESCENDING>(
+                    merged_tensor, index_tensor, source_value_tensor, source_index_tensor,
+                    temporary_tensor, sort_count);
+            }
             output_value = reinterpret_cast<__ubuf__ float*>(Ub::SORT_ARRAY0_OFFSET);
             output_index = reinterpret_cast<__ubuf__ uint32_t*>(Ub::SORT_ARRAY1_OFFSET);
             if (short_row) restore_short_row_fill_vf(ub, sort_input, topk, value_oob_fill, idx_oob_fill);
@@ -1033,8 +1044,9 @@ template <Config CONFIG>
 __aicore__ inline void run_topk_select_row(const TopkSelectArgs& args) {
     const uint32_t row_idx = get_block_idx();
     RowArgs row;
-    row.valid_len =
+    const uint32_t raw_valid_len =
         args.end_ptr == nullptr ? args.vocab_size : static_cast<uint32_t>(args.end_ptr[row_idx]);
+    row.valid_len = raw_valid_len < args.vocab_size ? raw_valid_len : args.vocab_size;
     row.topk = args.topk;
     row.abort_when_nan_found = args.abort_when_nan_found;
     row.row_in = reinterpret_cast<__gm__ float*>(args.input) + row_idx * args.stride_input_batch;
