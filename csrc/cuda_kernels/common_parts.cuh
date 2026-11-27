@@ -212,8 +212,8 @@ struct EpilogueRunner {
             if constexpr (IS_SHORTCUT) {
                 if (warp_idx < NUM_WARPS/2) {
                     #pragma unroll 8
-                    for (uint32_t i = threadIdx.x; i < args.topk; i += NUM_THREADS/2) {
-                        smem_index_buf[i] = i < end_vocab_idx ? i : args.idx_oob_fill_value - output_idx_offset;
+                    for (uint32_t i = threadIdx.x; i < MAX_TOPK; i += NUM_THREADS/2) {
+                        smem_index_buf[i] = i;
                     }
                 } else {
                     constexpr uint32_t NUM_VALUES_PER_LDG128 = NUM_BYTES_PER_SMEM_LOAD / sizeof(ValueT);
@@ -254,7 +254,10 @@ struct EpilogueRunner {
                 OutIdxT local_indices_new[NUM_VALUES_PER_THREAD_FOR_SORT];
                 CUTE_UNROLL
                 for (uint32_t i = 0; i < NUM_VALUES_PER_THREAD_FOR_SORT; ++i)
-                    local_indices_new[i] = (OutIdxT)((int32_t)local_indices[i] + output_idx_offset);
+                    // Padding is not offset. Widen valid indices before adding, even for int64 output.
+                    local_indices_new[i] = IS_SHORTCUT && local_indices[i] >= end_vocab_idx
+                        ? (OutIdxT)args.idx_oob_fill_value
+                        : (OutIdxT)((int64_t)local_indices[i] + output_idx_offset);
                 auto store = [&]<uint32_t NUM_VALUES, typename T>(T* dst, T src[NUM_VALUES]) {
                     constexpr uint32_t NUM_BYTES_TO_STORE = NUM_VALUES * sizeof(T);
                     if constexpr (NUM_BYTES_TO_STORE <= NUM_BYTES_PER_GMEM_STORE) {
