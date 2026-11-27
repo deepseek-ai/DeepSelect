@@ -437,20 +437,16 @@ public:
         uint32_t permuted_segment_stride_per_round = NUM_SEGS_PER_ROUND % perm_len * perm_mul % perm_len;
 
         uint32_t num_main_rounds = num_rounds - num_init_rounds;
+        uint32_t reconstruct_trigger = num_main_rounds > 16 ? RECONSTRUCT_THRESHOLD / 4 : RECONSTRUCT_THRESHOLD;
         // Track the TMA buffer index and its phase incrementally instead of dividing every round.
         uint32_t tma_buf_idx = 0;
         uint32_t tma_buf_phase = 0;
+        uint32_t logical_elem_offset = threadIdx.x * NUM_ELEMS_PER_THREAD_PER_ROUND;
+        uint32_t offset_in_segment = logical_elem_offset % NUM_ELEMS_PER_SEG;
+        uint32_t swizzle_mask = Base::sw_msk(logical_elem_offset);
+        uint32_t chunk_swizzle_mask = swizzle_mask & ELEMS_PER_THREAD_PER_ROUND_MASK;
+        uint32_t smem_read_offset = logical_elem_offset ^ (swizzle_mask & ~ELEMS_PER_THREAD_PER_ROUND_MASK);
         for (uint32_t main_round_idx = 0; main_round_idx < num_main_rounds; ++main_round_idx) {
-            // This thread's contiguous chunk starts at logical_elem_offset in this round.
-            uint32_t logical_elem_offset = threadIdx.x * NUM_ELEMS_PER_THREAD_PER_ROUND;
-            // Offset inside the 512-element segment; used later to rebuild original indices.
-            uint32_t offset_in_segment = logical_elem_offset % NUM_ELEMS_PER_SEG;
-            // TMA stores the round data in a swizzled layout. swizzle_mask describes how the
-            // logical element offset is mapped to the actual shared-memory offset.
-            uint32_t swizzle_mask = Base::sw_msk(logical_elem_offset);
-            uint32_t chunk_swizzle_mask = swizzle_mask & ELEMS_PER_THREAD_PER_ROUND_MASK;
-            uint32_t smem_read_offset = logical_elem_offset ^ (swizzle_mask & ~ELEMS_PER_THREAD_PER_ROUND_MASK);
-
             if (main_round_idx + TMA_PREFETCH_DEPTH < num_main_rounds) {
                 if (cute::elect_one_sync()) {
                     issue_tma_loads_for_round.template operator()<false, false>(main_round_idx + TMA_PREFETCH_DEPTH);
@@ -540,7 +536,7 @@ public:
                 tma_buf_phase ^= 1u;
             }
 
-            if (num_incomers >= RECONSTRUCT_THRESHOLD) {
+            if (num_incomers >= reconstruct_trigger && main_round_idx + 1 < num_main_rounds) {
                 threshold_bits = reconstruct(num_incomers);
                 num_incomers = 0;
             }
