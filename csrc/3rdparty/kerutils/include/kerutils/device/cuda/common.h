@@ -3,6 +3,7 @@ Common data types and macros that are used across the kerutils library.
 */
 #pragma once
 
+#include <cstdint>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
@@ -36,6 +37,24 @@ using nve4m3x4 = __nv_fp8x4_e4m3;
 
 using bf16 = cutlass::bfloat16_t;
 using transac_bar_t = cutlass::arch::ClusterTransactionBarrier;
+
+// Opaque 128-bit payload; MSVC does not provide a scalar 128-bit integer.
+#ifdef _MSC_VER
+using int128_t = int4;
+#else
+using int128_t = __int128_t;
+#endif
+static_assert(sizeof(int128_t) == 16 && alignof(int128_t) == 16);
+
+CUTE_HOST_DEVICE
+constexpr int128_t make_int128(uint64_t low, uint64_t high) {
+#ifdef _MSC_VER
+    return {static_cast<int32_t>(low), static_cast<int32_t>(low >> 32),
+            static_cast<int32_t>(high), static_cast<int32_t>(high >> 32)};
+#else
+    return (static_cast<int128_t>(high) << 64) | low;
+#endif
+}
 
 }
 
